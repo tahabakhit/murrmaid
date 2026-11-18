@@ -1,10 +1,6 @@
 node_modules/
 notes/
 .claude/
-packages/cli/dist/
 *.tgz
 .DS_Store
-packages/cli/LICENSE
-packages/cli/THIRD_PARTY_NOTICES.md
-packages/cli/README.md
 adapters/claude-code/.claude-plugin/types/

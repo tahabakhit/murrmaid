@@ -7,7 +7,7 @@
       "name": "murrmaid",
       "source": "./adapters/claude-code",
       "description": "Draws ```mermaid diagrams in assistant replies as Unicode box drawing in the terminal; leaves any diagram it can't draw well as source.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "license": "MIT"
     }
   ]

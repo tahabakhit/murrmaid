@@ -29,7 +29,7 @@ export function scan(markdown: string, options: Options = {}): Scan {
     for (const fence of findFences(markdown)) {
       if (fence.language !== 'mermaid') continue
       const width = options.width === undefined ? undefined : options.width - fence.indent.length
-      const result = drawDiagram(fence.body, { ...options, width })
+      const result = cachedDraw(fence.body, { ...options, width })
       diagrams.push({ line: fence.line, result })
       if (!result.ok) continue
       output += markdown.slice(copied, fence.start) + toFence(result.drawing, fence.indent, fence.eol)
@@ -40,6 +40,26 @@ export function scan(markdown: string, options: Options = {}): Scan {
     // Unreachable by design; if it happens, the input is still the answer.
     return { markdown, diagrams }
   }
+}
+
+// Hosts redraw a reply on every streamed token and when it scrolls back into
+// view. Results are kept per diagram, not per reply, so each diagram is laid
+// out once per width however often the text around it changes. The cache
+// changes no result, so scan stays a pure function of its arguments.
+const CACHE_SIZE = 128
+const cache = new Map<string, Result>()
+
+function cachedDraw(source: string, options: Options): Result {
+  const key = JSON.stringify([options.width ?? null, options.ascii === true, options.color === true, source])
+  let result = cache.get(key)
+  if (result !== undefined) {
+    cache.delete(key) // most recently used last
+  } else {
+    result = Object.freeze(drawDiagram(source, options))
+    if (cache.size >= CACHE_SIZE) cache.delete(cache.keys().next().value!)
+  }
+  cache.set(key, result)
+  return result
 }
 
 /** The markdown with each drawable ```mermaid fence replaced by its drawing. */

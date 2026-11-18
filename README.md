@@ -83,11 +83,10 @@ licence, notices and the bundled core sit inside it.
 
 ### CLI
 
-murrmaid is not on npm yet. From a checkout:
+murrmaid is not on npm yet. From a checkout (the CLI is committed prebuilt,
+so there is nothing to build):
 
 ```sh
-npm ci
-npm run build
 npm install --global ./packages/cli
 ```
 
@@ -116,12 +115,13 @@ done, 1 `--check` found a fallback, 2 bad arguments or an unreadable file.
 ### Pi
 
 ```sh
-pi install git:github.com/tahabakhit/murrmaid@v0.1.0
+pi install git:github.com/tahabakhit/murrmaid@v0.1.1
 ```
 
 Or load it for one session with
 `pi -e /path/to/murrmaid/adapters/pi/index.ts`. The extension registers a
-display-only `pi.registerMarkdownTransformer` for assistant messages.
+display-only `pi.registerMarkdownTransformer` for assistant messages, and
+fits drawings to Pi's width less its `markdown.codeBlockIndent`.
 
 Pi has its own Mermaid renderer, which is on by default (setting
 `markdown.mermaid`). It draws diagrams before extension transformers see
@@ -154,6 +154,11 @@ Fallback is the point: when in doubt, the original block is kept byte for
 byte. A diagram stays as source when:
 
 - its type is not in the table above;
+- it is a flowchart or state diagram that beautiful-mermaid would take
+  around 25 seconds to give up on: more than 24 nodes, or edges routed into
+  the top row of a top-down layout (see
+  [docs/upstream-notes.md](docs/upstream-notes.md)). murrmaid checks this
+  before drawing, from the renderer's own parse of the diagram;
 - beautiful-mermaid throws, or draws nothing;
 - the drawing leaves out a word the source would show, such as a label,
   name, message or note. beautiful-mermaid draws what it understood and
@@ -161,8 +166,10 @@ byte. A diagram stays as source when:
   (keywords, styling lines and ids that carry their own labels excepted)
   against the drawing;
 - it has front matter (`---`), which would carry a title;
-- it contains wide or zero-width characters (CJK, emoji, combining marks)
-  or tabs, which the renderer misaligns;
+- it contains wide or zero-width characters (CJK, emoji, combining marks,
+  anything beyond U+FFFF) or control characters such as tabs, which the
+  renderer misaligns (`%%` comment lines don't count);
+- a flowchart sets `direction` outside a subgraph;
 - it is wider than the available width;
 - it is larger than 20,000 characters or 400 lines;
 - the fence is not closed yet, as while a reply streams.
@@ -179,8 +186,12 @@ byte. A diagram stays as source when:
   [docs/upstream-notes.md](docs/upstream-notes.md).
 - The word check can't catch a diagram that is drawn with every word in the
   wrong place. It can reject a diagram that is drawn correctly when the
-  renderer formats a word differently, such as class method parameters. In
-  both cases the diagram stays as source.
+  renderer formats a word differently, such as class method parameters, and
+  the layout check refuses some top-down flowcharts that would have drawn.
+  In both cases the diagram stays as source.
+- Each diagram's result is cached (128 entries) by its source, width and
+  options, so a host that redraws a reply on every streamed token lays each
+  diagram out once.
 - The Claude Code adapter draws without colour, because Claude Code renders
   the fence as code.
 
@@ -195,8 +206,14 @@ npm run build                  # writes the bundles and copies the notices
 npm run check:bundles          # fails if a committed bundle differs from a fresh build
 ```
 
+This covers the adapters' `murrmaid.js`, the CLI's `packages/cli/dist`, and
+the licence, notice and README copies beside them, so packing the CLI
+(`npm pack -w packages/cli`) needs no build step; `.npmrc` turns lifecycle
+scripts off.
+
 `scripts/build.ts` bundles `packages/core` with beautiful-mermaid's ASCII
-entry (`src/ascii/index.ts`), unmodified. The SVG path, and with it elkjs
+renderer and mermaid parser (`src/ascii/index.ts`, `src/parser.ts`),
+unmodified. The SVG path, and with it elkjs
 and entities, is not bundled. The build fails if a bundle holds `require(`,
 `import(`, `fetch(`, `eval(`, a WebSocket, a package not listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), or more than 1 MiB.

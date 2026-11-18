@@ -2,15 +2,18 @@
 //
 //   adapters/claude-code/hooks/murrmaid.js  core for the Claude Code mod
 //   adapters/pi/murrmaid.js                 core for the Pi extension
-//   packages/cli/dist/murrmaid.js           the CLI, for npm (not committed)
+//   packages/cli/dist/murrmaid.js           the CLI, for npm
 //
-// and copies LICENSE and THIRD_PARTY_NOTICES.md next to each of them.
+// and copies LICENSE and THIRD_PARTY_NOTICES.md next to each of them (and
+// README.md into packages/cli). All of these are committed, so the adapters
+// and `npm pack -w packages/cli` need no build step or install script.
 //
 // `node scripts/build.ts --check` rebuilds in memory and fails if a committed
 // bundle differs, so a reviewer can confirm the bundles match the source.
 //
-// Only beautiful-mermaid's ASCII renderer is bundled (its src/ascii entry),
-// which leaves out the SVG path and with it elkjs and entities.
+// Only beautiful-mermaid's ASCII renderer and its mermaid parser are bundled
+// (src/ascii/index.ts and src/parser.ts), which leaves out the SVG path and
+// with it elkjs and entities.
 
 import { build, type BuildOptions, type Metafile, type Plugin } from 'esbuild'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -27,11 +30,17 @@ const renderer = version('node_modules/beautiful-mermaid/package.json')
 const NOTICED = new Set(['beautiful-mermaid'])
 const MAX_BYTES = 1024 * 1024 // a hooks module may not import a larger file
 
+// `import ... from 'beautiful-mermaid'` gets the two parts core uses, from
+// the package's own unmodified sources.
 const asciiOnly: Plugin = {
   name: 'beautiful-mermaid-ascii',
   setup(api) {
-    api.onResolve({ filter: /^beautiful-mermaid$/ }, () => ({
-      path: join(root, 'node_modules/beautiful-mermaid/src/ascii/index.ts'),
+    const src = join(root, 'node_modules/beautiful-mermaid/src')
+    api.onResolve({ filter: /^beautiful-mermaid$/ }, () => ({ path: 'beautiful-mermaid', namespace: 'ascii-only' }))
+    api.onLoad({ filter: /.*/, namespace: 'ascii-only' }, () => ({
+      resolveDir: src,
+      loader: 'ts',
+      contents: "export { renderMermaidASCII } from './ascii/index.ts'\nexport { parseMermaid } from './parser.ts'\n",
     }))
   },
 }
@@ -51,33 +60,32 @@ const shared: BuildOptions = {
   write: false,
 }
 
-const targets: { out: string; options: BuildOptions; committed: boolean }[] = [
-  { out: 'adapters/claude-code/hooks/murrmaid.js', committed: true, options: { entryPoints: ['packages/core/src/index.ts'], platform: 'neutral', banner: { js: banner } } },
-  { out: 'adapters/pi/murrmaid.js', committed: true, options: { entryPoints: ['packages/core/src/index.ts'], platform: 'neutral', banner: { js: banner } } },
-  { out: 'packages/cli/dist/murrmaid.js', committed: false, options: { entryPoints: ['packages/cli/src/bin.ts'], platform: 'node', banner: { js: banner } } },
+const targets: { out: string; options: BuildOptions }[] = [
+  { out: 'adapters/claude-code/hooks/murrmaid.js', options: { entryPoints: ['packages/core/src/index.ts'], platform: 'neutral', banner: { js: banner } } },
+  { out: 'adapters/pi/murrmaid.js', options: { entryPoints: ['packages/core/src/index.ts'], platform: 'neutral', banner: { js: banner } } },
+  { out: 'packages/cli/dist/murrmaid.js', options: { entryPoints: ['packages/cli/src/bin.ts'], platform: 'node', banner: { js: banner } } },
 ]
 
 // Each place a bundle ships also carries the licence and notices beside it.
-const copies: { from: string; out: string; committed: boolean }[] = []
+const copies: { from: string; out: string }[] = []
 for (const dir of ['adapters/claude-code', 'adapters/pi', 'packages/cli']) {
-  for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) copies.push({ from: file, out: `${dir}/${file}`, committed: dir !== 'packages/cli' })
+  for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) copies.push({ from: file, out: `${dir}/${file}` })
 }
-copies.push({ from: 'README.md', out: 'packages/cli/README.md', committed: false })
+copies.push({ from: 'README.md', out: 'packages/cli/README.md' })
 
-const outputs: { out: string; text: string; committed: boolean }[] = []
-for (const { out, options, committed } of targets) {
+const outputs: { out: string; text: string }[] = []
+for (const { out, options } of targets) {
   const result = await build({ ...shared, ...options, outfile: join(root, out) })
   const text = result.outputFiles![0]!.text
   const problems = audit(text, result.metafile!)
   if (problems.length > 0) throw new Error(`${out}: ${problems.join('; ')}`)
-  outputs.push({ out, text, committed })
+  outputs.push({ out, text })
 }
-for (const { from, out, committed } of copies) outputs.push({ out, text: readFileSync(join(root, from), 'utf8'), committed })
+for (const { from, out } of copies) outputs.push({ out, text: readFileSync(join(root, from), 'utf8') })
 
 let failed = false
-for (const { out, text, committed } of outputs) {
+for (const { out, text } of outputs) {
   if (check) {
-    if (!committed) continue
     let current = ''
     try {
       current = readFileSync(join(root, out), 'utf8')

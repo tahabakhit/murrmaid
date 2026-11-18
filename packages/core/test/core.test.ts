@@ -31,6 +31,30 @@ describe('supported diagram types draw', () => {
   }
 })
 
+describe('mermaid syntax the renderer draws, though not word for word', () => {
+  const cases: Record<string, string> = {
+    'graph with no direction': 'graph\n  A[One] --> B[Two]',
+    'header ending in ;': 'graph TD;\n  A[One] --> B[Two];',
+    'line breaks in labels': 'flowchart LR\n  A[Line one<br/>Line two] --> B[x]',
+    ':::style shorthand': 'flowchart LR\n  A[x]:::warn --> B[y]',
+    'parentheses in a label': 'flowchart LR\n  A[call foo(x)] --> B',
+    'direction in a subgraph': 'flowchart TD\n  subgraph S [Group]\n    direction LR\n    A[x] --> B[y]\n  end',
+    'a tab or emoji in a comment': 'flowchart LR\n  %%\tnote 🚀\n  A[x] --> B[y]',
+    'one-column symbols': 'flowchart LR\n  A[© ™ ↔ x] --> B[y]',
+    'state description': 'stateDiagram-v2\n  S1 : The first state\n  [*] --> S1',
+    'state class line': 'stateDiagram-v2\n  classDef bad fill:red\n  Idle --> Run\n  class Idle bad',
+    'ER zero-or-one': 'erDiagram\n  CUSTOMER |o--o| ORDER : places',
+    'sequence -x arrow': 'sequenceDiagram\n  Alice-xJohn: Hello',
+    'class o-- arrow': 'classDiagram\n  Car o-- Wheel',
+  }
+  for (const [name, source] of Object.entries(cases)) {
+    test(name, () => {
+      const result = drawDiagram(source)
+      assert.ok(result.ok, result.ok ? '' : result.reason)
+    })
+  }
+})
+
 describe('fallback leaves the block exactly as it was', () => {
   const unchanged = (source: string, options = {}) => {
     const input = doc(source)
@@ -60,7 +84,26 @@ describe('fallback leaves the block exactly as it was', () => {
     assert.match(unchanged('---\ntitle: T\n---\ngraph LR\n  A --> B'), /front matter/)
     assert.match(unchanged('graph LR\n  A[你好] --> B[ok]'), /wide/)
     assert.match(unchanged('graph LR\n  A[🚀 go] --> B[ok]'), /wide/)
+    assert.match(unchanged('graph LR\n  A[𝐀𝐁𝐂 x] --> B[ok]'), /wide/)
+    assert.match(unchanged('graph LR\n  A[🇺🇸 x] --> B[ok]'), /wide/)
+    assert.match(unchanged('graph LR\n  A[a\tb] --> B[ok]'), /control/)
     assert.match(unchanged('stateDiagram-v2\n  [*] --> A\n  note right of A: important'), /leaves out "important"/)
+    assert.match(unchanged('classDiagram\n  class Shape\n  <<interface>> Shape'), /leaves out "interface"/)
+    assert.match(unchanged('erDiagram\n  C }o..o{ D : maybe'), /nothing drawn|leaves out/)
+    assert.match(unchanged('flowchart TD\n  direction LR\n  A[x] --> B[y]'), /direction outside a subgraph/)
+  })
+
+  // Each of these takes beautiful-mermaid about 25 seconds to give up on.
+  test('layouts the renderer would not finish, refused at once', () => {
+    const chain = (n: number) => 'graph LR\n' + Array.from({ length: n }, (_, i) => `  N${i} --> N${i + 1}`).join('\n')
+    const started = performance.now()
+    assert.match(unchanged('graph TD\n  A --> B\n  B --> C\n  B --> A'), /layout would not finish: edges into "A"/)
+    assert.match(unchanged('graph TD\n  C --> F\n  B --> D\n  B --> C'), /layout would not finish: edges into "C"/)
+    assert.match(unchanged('stateDiagram-v2\n  A --> A\n  B --> A\n  C --> A'), /layout would not finish/)
+    assert.match(unchanged(chain(25)), /layout would not finish: more than 24 nodes/)
+    assert.ok(performance.now() - started < 2000)
+    // A labelled loop back to the start is routed on its own, and draws.
+    assert.ok(drawDiagram('graph TD\n  A[Start] --> B{OK?}\n  B -->|yes| C[Done]\n  B -->|no| A').ok)
   })
 
   test('wider than the available width', () => {
@@ -135,6 +178,14 @@ describe('options', () => {
     const out = renderMarkdown(fence('graph LR\n  A["see ```"] --> B'))
     assert.match(out, /^````text\n[\s\S]*\n````$/)
   })
+})
+
+test('a diagram is drawn once however its reply grows', () => {
+  const diagram = '\n\n' + fence('graph LR\n  A[Cached] --> B[Twice]')
+  const first = scan(`Streaming${diagram}`, { width: 80 }).diagrams[0]!.result
+  const again = scan(`Streaming more text${diagram}`, { width: 80 }).diagrams[0]!.result
+  assert.equal(again, first)
+  assert.notEqual(scan(`Streaming${diagram}`, { width: 81 }).diagrams[0]!.result, first)
 })
 
 test('never throws, whatever the input', () => {

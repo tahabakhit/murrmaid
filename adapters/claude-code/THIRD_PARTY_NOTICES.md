@@ -4,10 +4,10 @@ The bundled files
 
 - `adapters/claude-code/hooks/murrmaid.js`
 - `adapters/pi/murrmaid.js`
-- `packages/cli/dist/murrmaid.js` (built for npm, not committed)
+- `packages/cli/dist/murrmaid.js`
 
 are built by `scripts/build.ts` from murrmaid's own code (MIT, see `LICENSE`)
-and the ASCII renderer of **beautiful-mermaid 1.1.3**
+and the ASCII renderer and mermaid parser of **beautiful-mermaid 1.1.3**
 (<https://github.com/lukilabs/beautiful-mermaid>, npm `beautiful-mermaid`),
 unmodified. Nothing else is bundled: the build fails if any other package
 ends up in a bundle. beautiful-mermaid's dependencies (elkjs, entities) serve
