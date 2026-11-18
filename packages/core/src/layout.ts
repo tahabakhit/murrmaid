@@ -56,7 +56,7 @@ const blocked = (target: string) => `edges into "${target}" can't be routed`
 
 // Nodes the renderer may place in the first row: every node not yet reached
 // by an edge from a node before it (its roots), and every node in a subgraph
-// with its own direction, which can sit level with its parent.
+// laid out left to right, which can sit level with its parent.
 function firstRowCandidates(graph: Graph): Set<string> {
   const candidates = new Set<string>()
   const reached = new Set<string>()
@@ -67,7 +67,7 @@ function firstRowCandidates(graph: Graph): Set<string> {
   }
   const visit = (subgraphs: Graph['subgraphs'], directed: boolean) => {
     for (const subgraph of subgraphs) {
-      const inside = directed || subgraph.direction !== undefined
+      const inside = directed || subgraph.direction === 'LR' || subgraph.direction === 'RL'
       if (inside) for (const id of subgraph.nodeIds) candidates.add(id)
       visit(subgraph.children, inside)
     }

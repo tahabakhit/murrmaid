@@ -5599,7 +5599,7 @@ function firstRowCandidates(graph) {
   }
   const visit = (subgraphs, directed) => {
     for (const subgraph of subgraphs) {
-      const inside = directed || subgraph.direction !== void 0;
+      const inside = directed || subgraph.direction === "LR" || subgraph.direction === "RL";
       if (inside) for (const id of subgraph.nodeIds) candidates.add(id);
       visit(subgraph.children, inside);
     }
@@ -5666,15 +5666,15 @@ var STYLE_LINE = /^(style|classDef|linkStyle|click|accTitle|accDescr)\b/;
 var CLASS_LINE = /^class\s/;
 var XY_DATA_LINE = /^(bar|line)\b/;
 var LINE_BREAK = /<br\s*\/?>/gi;
-var STYLE_SHORTHAND = /:::[\p{L}\p{N}_-]+/gu;
+var STYLE_SHORTHAND = /:::[\p{L}\p{N}_]+(?:-[\p{L}\p{N}_]+)*/gu;
 var EDGE_RUN = /<?[-=.~]{2,}>?/g;
 var FLOWCHART_EDGES = /* @__PURE__ */ new Set(["-->", "--->", "<-->", "<--->", "---", "-.->", "<-.->", "-.-", "==>", "<==>", "==="]);
 var TEXT_EDGE_OPEN = /* @__PURE__ */ new Set(["--", "-.", "==", "<--", "<-.", "<=="]);
-var TEXT_EDGE_CLOSE = /* @__PURE__ */ new Set(["-->", "---", ".->", "-.-", "==>", "==="]);
+var TEXT_EDGE_REST = /^\s+(.+?)\s+(-->|---|\.->|-\.-|==>|===)/;
 var SEQUENCE_MESSAGE = /^(\S+?)\s*(--?>?>|--?[)x]|--?>>|--?>)\s*([+-]?)(\S+?)\s*:\s*(.+)$/;
-var CLASS_RELATION = /(?<!\S)(?:<\||[<*o])?(?:--|\.\.)(?:\|>|[>*o])?(?!\S)/g;
-var CLASS_ARROWS = /* @__PURE__ */ new Set(["<|--", "--|>", "<|..", "..|>", "*--", "--*", "o--", "--o", "-->", "<--", "..>", "<..", "--"]);
-var ER_RELATION = /(?<!\S)([|o}{]+)(?:--|\.\.)([|o}{]+)(?!\S)/g;
+var CLASS_RELATION = /^(\S+?)\s+(?:"([^"]*?)"\s+)?(<\|--|<\|\.\.|\*--|o--|-->|--\*|--o|--\|>|\.\.>|\.\.\|>|<--|<\.\.)\s+(?:"([^"]*?)"\s+)?(\S+?)(?:\s*:\s*(.+))?$/;
+var ER_RELATION = /^(\S+)\s+([|o}{]+)(--|\.\.)([|o}{]+)\s+(\S+)\s*:\s*(.+)$/;
+var RELATION_LINE = /--|\.\./;
 var ER_ENDS = /* @__PURE__ */ new Set(["||", "o|", "|}", "{|", "o{"]);
 var WORD = /[\p{L}\p{N}_]+/gu;
 var NOT_ONE_COLUMN = new RegExp(
@@ -5693,7 +5693,7 @@ function drawDiagram(source, options = {}) {
   if (header === "---") return fail("front matter is not supported");
   if (type === void 0) return fail(`unsupported diagram type "${header.split(/\s+/)[0]}"`);
   if (source.length > MAX_SOURCE_CHARS || lines.length > MAX_SOURCE_LINES) return fail("diagram too large");
-  const body = lines.slice(first + 1).map((line) => type === "state" ? line.replace(STYLE_SHORTHAND, "") : line);
+  const body = lines.slice(first + 1).map((line) => type === "state" ? stateStyles(line) : line);
   const text = [type === "flowchart" ? flowchartHeader(header) : header, ...body].join("\n");
   if (body.some((line) => NOT_ONE_COLUMN.test(line))) return fail("wide, zero-width or control characters");
   if (type === "flowchart" && topLevelDirection(body)) return fail("direction outside a subgraph");
@@ -5721,11 +5721,23 @@ function flowchartHeader(header) {
   const [keyword = "graph", direction = "TD"] = header.replace(/;$/, "").trim().split(/\s+/);
   return `${keyword} ${direction}`;
 }
+function stateStyles(line) {
+  const style = new RegExp("^" + STYLE_SHORTHAND.source, "u");
+  let shown = "";
+  let from = 0;
+  for (; ; ) {
+    const colon = line.indexOf(":", from);
+    const match = colon === -1 ? null : style.exec(line.slice(colon));
+    if (match === null) return shown + line.slice(from);
+    shown += line.slice(from, colon);
+    from = colon + match[0].length;
+  }
+}
 function topLevelDirection(body) {
   let depth = 0;
   for (const line of body.map((line2) => line2.trim())) {
-    if (/^subgraph\b/.test(line)) depth++;
-    else if (/^end\b/.test(line)) depth = Math.max(0, depth - 1);
+    if (/^subgraph(\s|$)/.test(line)) depth++;
+    else if (/^end\s*;?$/.test(line)) depth = Math.max(0, depth - 1);
     else if (depth === 0 && /^direction\s+(TB|TD|BT|LR|RL)\s*;?$/i.test(line)) return true;
   }
   return false;
@@ -5763,17 +5775,23 @@ function readLine(type, line) {
       const message = SEQUENCE_MESSAGE.exec(text);
       if (message === null) return { text, ids: aliasIds(type, text) };
       const [, from, arrow, , to, label] = message;
-      if (arrow.includes("x") || /[<>]/.test(from + to)) return { text, ids: [], unsupported: `${from}${arrow}${to}` };
+      if (arrow.includes("x") || from.endsWith("<") || to.startsWith(">")) return { text, ids: [], unsupported: `${from}${arrow}${to}` };
       return { text: `${from} ${to}: ${label}`, ids: [] };
     }
     case "class": {
-      const arrows = text.match(CLASS_RELATION) ?? [];
-      const unsupported = arrows.find((arrow) => !CLASS_ARROWS.has(arrow));
-      return { text: text.replace(CLASS_RELATION, " "), ids: [], unsupported };
+      if (!RELATION_LINE.test(text.split(":")[0])) return { text, ids: [] };
+      const relation = CLASS_RELATION.exec(text);
+      if (relation === null) return { text, ids: [], unsupported: text.split(":")[0].trim() };
+      const [, from, fromCount = "", , toCount = "", to, label = ""] = relation;
+      return { text: [from, fromCount, toCount, to, label].join(" "), ids: [] };
     }
     case "er": {
-      const relation = [...text.matchAll(ER_RELATION)].find(([, left, right]) => !ER_ENDS.has(sorted(left)) || !ER_ENDS.has(sorted(right)));
-      return { text: text.replace(ER_RELATION, " -- "), ids: [], unsupported: relation?.[0] };
+      if (!RELATION_LINE.test(text.split(":")[0])) return { text, ids: [] };
+      const relation = ER_RELATION.exec(text);
+      if (relation === null || !ER_ENDS.has(sorted(relation[2])) || !ER_ENDS.has(sorted(relation[4]))) {
+        return { text, ids: [], unsupported: text.split(":")[0].trim() };
+      }
+      return { text: [relation[1], relation[5], relation[6]].join(" "), ids: [] };
     }
     case "state": {
       const described = /^([\p{L}\p{N}_]+)\s*:/u.exec(text);
@@ -5819,20 +5837,36 @@ function flowchartLine(line) {
     outside += before || quoted || edgeLabel || depth > 0 || char === "|" ? " ".repeat(char.length) : char;
   }
   let shown = text;
-  for (const match of outside.matchAll(EDGE_RUN)) {
+  const blank = (start, end) => {
+    shown = shown.slice(0, start) + " ".repeat(end - start) + shown.slice(end);
+  };
+  const marker = (i) => /[ox]/.test(outside[i] ?? "");
+  const wordChar = (i) => /[\p{L}\p{N}_]/u.test(outside[i] ?? " ");
+  const space = (i) => /\s/.test(outside[i] ?? " ");
+  const runs = new RegExp(EDGE_RUN.source, "g");
+  for (let match = runs.exec(outside); match !== null; match = runs.exec(outside)) {
     const arrow = match[0];
     const start = match.index;
-    const end = start + arrow.length;
-    const lone = (i) => /[ox]/.test(outside[i] ?? "") && !/[\p{L}\p{N}_]/u.test(outside[i + (i < start ? -1 : 1)] ?? " ");
-    const circleOrCross = !arrow.startsWith("<") && lone(start - 1) || !arrow.endsWith(">") && lone(end);
-    const space = (i) => /\s/.test(outside[i] ?? " ");
-    const drawn = !circleOrCross && (FLOWCHART_EDGES.has(arrow) || TEXT_EDGE_OPEN.has(arrow) && space(end) || TEXT_EDGE_CLOSE.has(arrow) && space(start - 1));
-    if (!drawn) {
-      const from = circleOrCross && lone(start - 1) ? start - 1 : start;
-      const to = circleOrCross && lone(end) ? end + 1 : end;
-      return { text, ids, unsupported: text.slice(from, to) };
+    let end = start + arrow.length;
+    let last = arrow;
+    const startMarker = !arrow.startsWith("<") && marker(start - 1) && !wordChar(start - 2);
+    if (startMarker) return { text, ids, unsupported: text.slice(start - 1, end + 1).trim() };
+    if (!arrow.endsWith(">") && marker(end)) return { text, ids, unsupported: text.slice(start, end + 1) };
+    if (TEXT_EDGE_OPEN.has(arrow) && space(end)) {
+      const rest = TEXT_EDGE_REST.exec(outside.slice(end));
+      if (rest === null) return { text, ids, unsupported: arrow };
+      blank(start, end);
+      const close = end + rest[0].length - rest[2].length;
+      last = rest[2];
+      end = close + last.length;
+      blank(close, end);
+      runs.lastIndex = end;
+    } else if (FLOWCHART_EDGES.has(arrow)) {
+      blank(start, end);
+    } else {
+      return { text, ids, unsupported: arrow };
     }
-    shown = shown.slice(0, start) + " ".repeat(arrow.length) + shown.slice(end);
+    if (!last.endsWith(">") && marker(end)) return { text, ids, unsupported: text.slice(start, end + 1) };
   }
   return { text: shown, ids };
 }

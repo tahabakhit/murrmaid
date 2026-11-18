@@ -48,6 +48,11 @@ describe('mermaid syntax the renderer draws, though not word for word', () => {
     'a hyphenated sequence name': 'sequenceDiagram\n  Client->>api-xray: ping',
     'a hyphenated subgraph id': 'flowchart TD\n  subgraph web-app [web]\n    A[x] --> B[y]\n  end',
     'a node called direction': 'flowchart LR\n  direction[North] --> B[South]',
+    'a label with dashes': 'flowchart LR\n  A -- use --verbose --> B',
+    'a node called end-user in a subgraph': 'flowchart TD\n  subgraph S [Group]\n    end-user[User] --> B[x]\n    direction LR\n  end',
+    'a fork in a same-direction subgraph': 'flowchart TD\n  subgraph S [Group]\n    direction TD\n    A[a] --> B[b]\n    B --> C[c]\n    B --> D[d]\n  end',
+    'a generic sequence actor': 'sequenceDiagram\n  List<T>->>Cache: lookup',
+    'a class label with ..': 'classDiagram\n  A --> B : from .. to',
     'every edge it draws': 'flowchart LR\n  A --> B --- C -.-> D -.- E ==> F === G\n  H <--> I <-.-> J <==> K ---> L <---> M\n  N -- one --> O -. two .-> P == three ==> Q',
   }
   for (const [name, source] of Object.entries(cases)) {
@@ -108,14 +113,21 @@ describe('fallback leaves the block exactly as it was', () => {
     assert.match(unchanged('flowchart LR\n  A -.text.-> B\n  B --> C'), /unsupported arrow/)
     assert.match(unchanged('sequenceDiagram\n  Alice-xJohn: Hello'), /unsupported arrow "Alice-xJohn"/)
     assert.match(unchanged('sequenceDiagram\n  A<<->>B: hi'), /unsupported arrow/)
-    assert.match(unchanged('erDiagram\n  A ||--|| B : x\n  A }o--|| B : x'), /unsupported arrow "}o--\|\|"/)
-    assert.match(unchanged('classDiagram\n  A <|--|> B\n  A --> B'), /unsupported arrow "<\|--\|>"/)
+    assert.match(unchanged('erDiagram\n  A ||--|| B : x\n  A }o--|| B : x'), /unsupported arrow "A }o--\|\| B"/)
+    assert.match(unchanged('classDiagram\n  A <|--|> B\n  A --> B'), /unsupported arrow "A <\|--\|> B"/)
+    assert.match(unchanged('flowchart LR\n  A[Start]:::warn ---xB[Done]'), /unsupported arrow "---x"/)
+    assert.match(unchanged('classDiagram\n  Group o-- Member\n  class Admin\n  Member<|--Admin'), /unsupported arrow "Member<\|--Admin"/)
+    assert.match(unchanged('classDiagram\n  Car o-- Wheel\n  Wheel -- Road'), /unsupported arrow "Wheel -- Road"/)
   })
 
-  test('a state transition with :::style keeps its exit', () => {
-    const result = drawDiagram('stateDiagram-v2\n  [*] --> Idle\n  Idle:::active --> [*]')
-    assert.ok(result.ok, result.ok ? '' : result.reason)
-    assert.match(result.drawing, /╔/)
+  test('a state transition with :::style keeps its exit, and labels keep theirs', () => {
+    for (const source of ['stateDiagram-v2\n  [*] --> Idle\n  Idle:::active --> [*]', 'stateDiagram-v2\n  [*] --> Idle\n  Idle:::active-->[*]']) {
+      const result = drawDiagram(source)
+      assert.ok(result.ok, result.ok ? '' : result.reason)
+      assert.match(result.drawing, /╔/)
+    }
+    const labelled = drawDiagram('stateDiagram-v2\n  Idle --> Run: stats:::check')
+    assert.ok(labelled.ok && labelled.drawing.includes('stats:::check'))
   })
 
   // Each of these takes beautiful-mermaid about 25 seconds to give up on.

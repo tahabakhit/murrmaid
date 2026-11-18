@@ -59,7 +59,8 @@ const XY_DATA_LINE = /^(bar|line)\b/
 // Syntax inside a line that is not drawn as words: line breaks and `:::name`
 // style shorthand.
 const LINE_BREAK = /<br\s*\/?>/gi
-const STYLE_SHORTHAND = /:::[\p{L}\p{N}_-]+/gu
+// A style name's hyphens stop short of an arrow: `Idle:::active-->B`.
+const STYLE_SHORTHAND = /:::[\p{L}\p{N}_]+(?:-[\p{L}\p{N}_]+)*/gu
 
 // Arrows are not drawn as words either, but only those beautiful-mermaid
 // draws with their meaning are exempt. Any other arrow falls back: the
@@ -68,12 +69,18 @@ const STYLE_SHORTHAND = /:::[\p{L}\p{N}_-]+/gu
 const EDGE_RUN = /<?[-=.~]{2,}>?/g
 const FLOWCHART_EDGES = new Set(['-->', '--->', '<-->', '<--->', '---', '-.->', '<-.->', '-.-', '==>', '<==>', '==='])
 const TEXT_EDGE_OPEN = new Set(['--', '-.', '==', '<--', '<-.', '<=='])
-const TEXT_EDGE_CLOSE = new Set(['-->', '---', '.->', '-.-', '==>', '==='])
+// `A -- label --> B`, as src/parser.ts reads it: the shortest label.
+const TEXT_EDGE_REST = /^\s+(.+?)\s+(-->|---|\.->|-\.-|==>|===)/
 // beautiful-mermaid's own message pattern (src/sequence/parser.ts).
 const SEQUENCE_MESSAGE = /^(\S+?)\s*(--?>?>|--?[)x]|--?>>|--?>)\s*([+-]?)(\S+?)\s*:\s*(.+)$/
-const CLASS_RELATION = /(?<!\S)(?:<\||[<*o])?(?:--|\.\.)(?:\|>|[>*o])?(?!\S)/g
-const CLASS_ARROWS = new Set(['<|--', '--|>', '<|..', '..|>', '*--', '--*', 'o--', '--o', '-->', '<--', '..>', '<..', '--'])
-const ER_RELATION = /(?<!\S)([|o}{]+)(?:--|\.\.)([|o}{]+)(?!\S)/g
+// beautiful-mermaid's own relation patterns (src/class/parser.ts and
+// src/er/parser.ts). A line whose part before any ":" holds `--` or `..` is
+// a relation, and falls back unless it matches one of these. Class `--`
+// is left out: it is drawn with an arrowhead the source does not have.
+const CLASS_RELATION =
+  /^(\S+?)\s+(?:"([^"]*?)"\s+)?(<\|--|<\|\.\.|\*--|o--|-->|--\*|--o|--\|>|\.\.>|\.\.\|>|<--|<\.\.)\s+(?:"([^"]*?)"\s+)?(\S+?)(?:\s*:\s*(.+))?$/
+const ER_RELATION = /^(\S+)\s+([|o}{]+)(--|\.\.)([|o}{]+)\s+(\S+)\s*:\s*(.+)$/
+const RELATION_LINE = /--|\.\./
 // Each side's characters, sorted, as src/er/parser.ts accepts them.
 const ER_ENDS = new Set(['||', 'o|', '|}', '{|', 'o{'])
 
@@ -102,8 +109,7 @@ export function drawDiagram(source: string, options: Options = {}): Result {
   if (type === undefined) return fail(`unsupported diagram type "${header.split(/\s+/)[0]}"`)
   if (source.length > MAX_SOURCE_CHARS || lines.length > MAX_SOURCE_LINES) return fail('diagram too large')
 
-  // State diagrams skip a transition written with `:::name`, which only styles.
-  const body = lines.slice(first + 1).map(line => (type === 'state' ? line.replace(STYLE_SHORTHAND, '') : line))
+  const body = lines.slice(first + 1).map(line => (type === 'state' ? stateStyles(line) : line))
   const text = [type === 'flowchart' ? flowchartHeader(header) : header, ...body].join('\n')
   if (body.some(line => NOT_ONE_COLUMN.test(line))) return fail('wide, zero-width or control characters')
   if (type === 'flowchart' && topLevelDirection(body)) return fail('direction outside a subgraph')
@@ -136,13 +142,29 @@ function flowchartHeader(header: string): string {
   return `${keyword} ${direction}`
 }
 
+// State diagrams skip a transition written with `Idle:::name`, which only
+// styles, so the shorthand is removed from state names before drawing. A
+// label, after the first ":" that isn't part of one, is kept as written.
+function stateStyles(line: string): string {
+  const style = new RegExp('^' + STYLE_SHORTHAND.source, 'u')
+  let shown = ''
+  let from = 0
+  for (;;) {
+    const colon = line.indexOf(':', from)
+    const match = colon === -1 ? null : style.exec(line.slice(colon))
+    if (match === null) return shown + line.slice(from)
+    shown += line.slice(from, colon)
+    from = colon + match[0].length
+  }
+}
+
 // A flowchart's `direction` belongs in a subgraph. At the top level
 // beautiful-mermaid draws it as a node called "direction".
 function topLevelDirection(body: string[]): boolean {
   let depth = 0
   for (const line of body.map(line => line.trim())) {
-    if (/^subgraph\b/.test(line)) depth++
-    else if (/^end\b/.test(line)) depth = Math.max(0, depth - 1)
+    if (/^subgraph(\s|$)/.test(line)) depth++
+    else if (/^end\s*;?$/.test(line)) depth = Math.max(0, depth - 1)
     else if (depth === 0 && /^direction\s+(TB|TD|BT|LR|RL)\s*;?$/i.test(line)) return true
   }
   return false
@@ -204,17 +226,23 @@ function readLine(type: DiagramType, line: string): Line {
       if (message === null) return { text, ids: aliasIds(type, text) }
       const [, from, arrow, , to, label] = message as unknown as string[]
       // `-x` is drawn as a plain arrow, and `A<<->>B` as an actor named "A<<".
-      if (arrow!.includes('x') || /[<>]/.test(from! + to!)) return { text, ids: [], unsupported: `${from}${arrow}${to}` }
+      if (arrow!.includes('x') || from!.endsWith('<') || to!.startsWith('>')) return { text, ids: [], unsupported: `${from}${arrow}${to}` }
       return { text: `${from} ${to}: ${label}`, ids: [] }
     }
     case 'class': {
-      const arrows = text.match(CLASS_RELATION) ?? []
-      const unsupported = arrows.find(arrow => !CLASS_ARROWS.has(arrow))
-      return { text: text.replace(CLASS_RELATION, ' '), ids: [], unsupported }
+      if (!RELATION_LINE.test(text.split(':')[0]!)) return { text, ids: [] }
+      const relation = CLASS_RELATION.exec(text)
+      if (relation === null) return { text, ids: [], unsupported: text.split(':')[0]!.trim() }
+      const [, from, fromCount = '', , toCount = '', to, label = ''] = relation
+      return { text: [from, fromCount, toCount, to, label].join(' '), ids: [] }
     }
     case 'er': {
-      const relation = [...text.matchAll(ER_RELATION)].find(([, left, right]) => !ER_ENDS.has(sorted(left!)) || !ER_ENDS.has(sorted(right!)))
-      return { text: text.replace(ER_RELATION, ' -- '), ids: [], unsupported: relation?.[0] }
+      if (!RELATION_LINE.test(text.split(':')[0]!)) return { text, ids: [] }
+      const relation = ER_RELATION.exec(text)
+      if (relation === null || !ER_ENDS.has(sorted(relation[2]!)) || !ER_ENDS.has(sorted(relation[4]!))) {
+        return { text, ids: [], unsupported: text.split(':')[0]!.trim() }
+      }
+      return { text: [relation[1], relation[5], relation[6]].join(' '), ids: [] }
     }
     case 'state': {
       // `S1 : The first state` shows the description in place of S1.
@@ -271,24 +299,39 @@ function flowchartLine(line: string): Line {
     outside += before || quoted || edgeLabel || depth > 0 || char === '|' ? ' '.repeat(char.length) : char
   }
 
-  // Blank out each arrow, or report the first one not drawn as written.
+  // Blank out each arrow, or report the first one not drawn as written. A
+  // circle or cross end (`--o`, `x--`, `---xB`) is never drawn.
   let shown = text
-  for (const match of outside.matchAll(EDGE_RUN)) {
+  const blank = (start: number, end: number) => {
+    shown = shown.slice(0, start) + ' '.repeat(end - start) + shown.slice(end)
+  }
+  const marker = (i: number) => /[ox]/.test(outside[i] ?? '')
+  const wordChar = (i: number) => /[\p{L}\p{N}_]/u.test(outside[i] ?? ' ')
+  const space = (i: number) => /\s/.test(outside[i] ?? ' ')
+  const runs = new RegExp(EDGE_RUN.source, 'g')
+  for (let match = runs.exec(outside); match !== null; match = runs.exec(outside)) {
     const arrow = match[0]
     const start = match.index
-    const end = start + arrow.length
-    const lone = (i: number) => /[ox]/.test(outside[i] ?? '') && !/[\p{L}\p{N}_]/u.test(outside[i + (i < start ? -1 : 1)] ?? ' ')
-    const circleOrCross = (!arrow.startsWith('<') && lone(start - 1)) || (!arrow.endsWith('>') && lone(end))
-    const space = (i: number) => /\s/.test(outside[i] ?? ' ')
-    const drawn =
-      !circleOrCross &&
-      (FLOWCHART_EDGES.has(arrow) || (TEXT_EDGE_OPEN.has(arrow) && space(end)) || (TEXT_EDGE_CLOSE.has(arrow) && space(start - 1)))
-    if (!drawn) {
-      const from = circleOrCross && lone(start - 1) ? start - 1 : start
-      const to = circleOrCross && lone(end) ? end + 1 : end
-      return { text, ids, unsupported: text.slice(from, to) }
+    let end = start + arrow.length
+    let last = arrow
+    const startMarker = !arrow.startsWith('<') && marker(start - 1) && !wordChar(start - 2)
+    if (startMarker) return { text, ids, unsupported: text.slice(start - 1, end + 1).trim() }
+    if (!arrow.endsWith('>') && marker(end)) return { text, ids, unsupported: text.slice(start, end + 1) }
+    if (TEXT_EDGE_OPEN.has(arrow) && space(end)) {
+      const rest = TEXT_EDGE_REST.exec(outside.slice(end))
+      if (rest === null) return { text, ids, unsupported: arrow }
+      blank(start, end)
+      const close = end + rest[0].length - rest[2]!.length
+      last = rest[2]!
+      end = close + last.length
+      blank(close, end)
+      runs.lastIndex = end
+    } else if (FLOWCHART_EDGES.has(arrow)) {
+      blank(start, end)
+    } else {
+      return { text, ids, unsupported: arrow }
     }
-    shown = shown.slice(0, start) + ' '.repeat(arrow.length) + shown.slice(end)
+    if (!last.endsWith('>') && marker(end)) return { text, ids, unsupported: text.slice(start, end + 1) }
   }
   return { text: shown, ids }
 }
