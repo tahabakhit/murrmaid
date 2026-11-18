@@ -10,7 +10,8 @@ export { drawDiagram, type DiagramType, type Options, type Result } from './diag
 export interface Diagram {
   /** 1-based line of the opening ```mermaid fence. */
   line: number
-  result: Result
+  /** Frozen: the same object is returned whenever the diagram is seen again. */
+  result: Readonly<Result>
 }
 
 export interface Scan {
@@ -47,12 +48,12 @@ export function scan(markdown: string, options: Options = {}): Scan {
 // out once per width however often the text around it changes. The cache
 // changes no result, so scan stays a pure function of its arguments.
 const CACHE_SIZE = 128
-const cache = new Map<string, Result>()
+const cache = new Map<string, Readonly<Result>>()
 
-function cachedDraw(source: string, options: Options): Result {
+function cachedDraw(source: string, options: Options): Readonly<Result> {
   // A source too large to draw, or an odd width, is not worth keeping.
   const { width } = options
-  if (source.length > MAX_SOURCE_CHARS || (width !== undefined && !Number.isFinite(width))) return drawDiagram(source, options)
+  if (source.length > MAX_SOURCE_CHARS || (width !== undefined && !Number.isFinite(width))) return Object.freeze(drawDiagram(source, options))
   const key = JSON.stringify([width ?? null, options.ascii === true, options.color === true, source])
   let result = cache.get(key)
   if (result !== undefined) {

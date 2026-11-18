@@ -3,7 +3,7 @@
 // fails returns a reason instead of a drawing; nothing here throws.
 
 import { renderMermaidASCII } from 'beautiful-mermaid'
-import { layoutProblem, parseGraph } from './layout.ts'
+import { drawingProblem, layoutProblem, parseGraph } from './layout.ts'
 
 export interface Options {
   /** Widest drawing allowed, in terminal columns. Wider ones fall back. */
@@ -26,8 +26,8 @@ export const MAX_SOURCE_CHARS = 20_000
 const MAX_SOURCE_LINES = 400
 
 // Header lines beautiful-mermaid recognises. A flowchart header without a
-// direction, or ending in ";", is valid mermaid the renderer rejects, so it
-// is rewritten first (flowchartHeader).
+// direction, or ending in ";", is valid mermaid the renderer rejects, so
+// those fall back when it throws.
 const HEADERS: [RegExp, DiagramType][] = [
   [/^(graph|flowchart)(\s+(TD|TB|BT|LR|RL))?\s*;?$/i, 'flowchart'],
   [/^stateDiagram(-v2)?\s*$/i, 'state'],
@@ -56,11 +56,10 @@ const STYLE_LINE = /^(style|classDef|linkStyle|click|accTitle|accDescr)\b/
 const CLASS_LINE = /^class\s/
 const XY_DATA_LINE = /^(bar|line)\b/
 
-// Syntax inside a line that is not drawn as words: line breaks and `:::name`
-// style shorthand.
+// Line breaks in labels are not drawn as words. `:::name` style shorthand is
+// not exempt: the renderer mishandles it in places (a following arrow, state
+// transitions), so its name is a word the drawing must show, and isn't.
 const LINE_BREAK = /<br\s*\/?>/gi
-// A style name's hyphens stop short of an arrow: `Idle:::active-->B`.
-const STYLE_SHORTHAND = /:::[\p{L}\p{N}_]+(?:-[\p{L}\p{N}_]+)*/gu
 
 // Arrows are not drawn as words either, but only those beautiful-mermaid
 // draws with their meaning are exempt. Any other arrow falls back: the
@@ -110,10 +109,11 @@ export function drawDiagram(source: string, options: Options = {}): Result {
   if (type === undefined) return fail(`unsupported diagram type "${header.split(/\s+/)[0]}"`)
   if (source.length > MAX_SOURCE_CHARS || lines.length > MAX_SOURCE_LINES) return fail('diagram too large')
 
-  const body = lines.slice(first + 1).map(line => (type === 'state' ? stateStyles(line) : line))
-  const text = [type === 'flowchart' ? flowchartHeader(header) : header, ...body].join('\n')
+  const body = lines.slice(first + 1)
+  const text = [header, ...body].join('\n')
   if (body.some(line => NOT_ONE_COLUMN.test(line))) return fail('wide, zero-width or control characters')
   if (type === 'flowchart' && topLevelDirection(body)) return fail('direction outside a subgraph')
+  if (/\bRL\s*;?$/i.test(header) || body.some(line => /^\s*direction\s+RL\b/i.test(line))) return fail('right to left is drawn left to right')
   // Lines inside `Class {` or `ENTITY {` blocks are members, not relations.
   let block = false
   const content = contentLines(type, body).map(line => {
@@ -135,6 +135,8 @@ export function drawDiagram(source: string, options: Options = {}): Result {
       if (graph.edges.length < arrows) return fail(`drawing leaves out ${arrows - graph.edges.length} of ${arrows} edges`)
       const layout = layoutProblem(graph)
       if (layout !== undefined) return fail(`layout would not finish: ${layout}`)
+      const wrong = drawingProblem(graph)
+      if (wrong !== undefined) return fail(`would be drawn wrongly: ${wrong}`)
     }
     drawing = renderMermaidASCII(text, { useAscii: options.ascii === true, colorMode: options.color ? 'ansi16' : 'none' })
   } catch (error) {
@@ -149,33 +151,6 @@ export function drawDiagram(source: string, options: Options = {}): Result {
   const columns = Math.max(...plain.split('\n').map(line => [...line].length))
   if (options.width !== undefined && columns > options.width) return fail(`too wide (${columns} > ${options.width} columns)`)
   return { ok: true, type, drawing }
-}
-
-// `graph` alone means top-down, and a trailing ";" is allowed.
-function flowchartHeader(header: string): string {
-  const [keyword = 'graph', direction = 'TD'] = header.replace(/;$/, '').trim().split(/\s+/)
-  return `${keyword} ${direction}`
-}
-
-// State diagrams skip a transition written with `Idle:::name`, which only
-// styles, so the shorthand is removed from state names before drawing. A
-// label, after the first ":" that isn't part of one, is kept as written.
-function stateStyles(line: string): string {
-  const style = new RegExp('^' + STYLE_SHORTHAND.source, 'u')
-  let shown = ''
-  let quoted = false
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i]!
-    if (char === '"') quoted = !quoted
-    if (char === ':' && !quoted) {
-      const match = style.exec(line.slice(i))
-      if (match === null) return shown + line.slice(i)
-      i += match[0].length - 1
-      continue
-    }
-    shown += char
-  }
-  return shown
 }
 
 // A flowchart's `direction` belongs in a subgraph. At the top level
@@ -261,6 +236,7 @@ function readLine(type: DiagramType, line: string, inBlock: boolean): Line {
       if (relation === null) return { ...plain, problem: arrow(head.trim()) }
       const [, from, fromCount, , toCount, to, label = ''] = relation
       if (fromCount !== undefined || toCount !== undefined) return { ...plain, problem: 'multiplicities are not drawn' }
+      if (from === to) return { ...plain, problem: 'a class related to itself is not drawn as a loop' }
       return { ...plain, text: [from, to, label].join(' ') }
     }
     case 'er': {
@@ -273,8 +249,9 @@ function readLine(type: DiagramType, line: string, inBlock: boolean): Line {
     }
     case 'state': {
       // `S1 : The first state` shows the description in place of S1.
+      if (/^note\b/i.test(text)) return { ...plain, problem: 'state notes are not drawn' }
       const described = /^([\p{L}\p{N}_]+)\s*:/u.exec(text)
-      const edges = head.includes('-->') ? 1 : 0
+      const edges = text.replace(/"[^"]*"/g, '').split(':')[0]!.includes('-->') ? 1 : 0
       return { ...plain, edges, ids: [...aliasIds(type, text), ...(described ? [described[1]!] : [])] }
     }
     default:
@@ -332,8 +309,7 @@ function flowchartLine(line: string): Line {
     shown = shown.slice(0, start) + ' '.repeat(end - start) + shown.slice(end)
     outside = outside.slice(0, start) + ' '.repeat(end - start) + outside.slice(end)
   }
-  // `A:::name` styles a node; inside a label it is text.
-  for (const match of outside.matchAll(STYLE_SHORTHAND)) blank(match.index, match.index + match[0].length)
+  if (/;\s*\S/.test(outside)) return { text, ids, edges: 0, problem: 'several statements on one line' }
   // A subgraph's title, bracketed or not, is text.
   if (/^subgraph(\s|$)/.test(text)) return { text: shown, ids, edges: 0 }
 
@@ -352,7 +328,9 @@ function flowchartLine(line: string): Line {
     if (!found.startsWith('<') && marker(start - 1) && space(start - 2)) return fail(start - 1, end + 1)
     if (!found.endsWith('>') && marker(end)) return fail(start, end + 1)
     if (TEXT_EDGE_OPEN.has(found) && space(end)) {
-      const label = outside.slice(end).search(/\S/)
+      // The label starts at the first character after the opening, quoted
+      // or not; its end is looked for outside quotes.
+      const label = text.slice(end).search(/\S/)
       TEXT_EDGE_CLOSE.lastIndex = end + label + 1
       const close = label === -1 ? null : TEXT_EDGE_CLOSE.exec(outside)
       if (close === null) return fail(start, end)

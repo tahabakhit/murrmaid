@@ -77,6 +77,15 @@ Each is a candidate upstream issue. None has been filed yet.
 22. `A:::name-->B` reads `name--` as the style name and drops the edge.
 23. Class relation multiplicities (`"1" o-- "0..*"`) are not drawn.
 
+## More layout
+
+24. `graph RL` (and `direction RL`) is drawn left to right.
+25. An edge into a subgraph id is drawn to a stray node of that name; in a
+    state diagram, a transition into a composite state is dropped.
+26. Top-down, edges sharing an end are bundled with one arrowhead at the
+    target: `A & B --- C` gains arrowheads, `<-->` loses its start.
+27. A class related to itself (`Folder o-- Folder`) is drawn without a loop.
+
 ## How murrmaid copes
 
 | Problem | murrmaid |
@@ -84,12 +93,13 @@ Each is a candidate upstream issue. None has been filed yet.
 | 1 | refuses flowcharts and state diagrams with those layouts before drawing, and any with more than 24 nodes (`packages/core/src/layout.ts`) |
 | 2, 7, 8, 9, 10, 11, 13 | the word check finds a missing word and falls back |
 | 12, 14, 15, 16 | falls back on any arrow not drawn as written |
-| 17 | removes `:::name` from state diagrams before drawing |
+| 17 | falls back: `:::name` is not exempt from the word check |
 | 3 | removes `%%` lines before drawing |
 | 4 | falls back (front matter) |
-| 5 | rewrites the header to `graph TD` first |
+| 5 | falls back (parse error) |
 | 6 | falls back (direction outside a subgraph) |
 | 18 | falls back on wide, zero-width, control or non-BMP characters |
 | 19, 20 | drawn as is |
-| 21, 22 | falls back when the renderer's parse has fewer edges than the source has arrows |
+| 21, 22 | falls back on several statements on a line, or when the renderer's parse has fewer edges than the source has arrows |
 | 23 | falls back on multiplicities |
+| 24, 25, 26, 27 | falls back (right to left, edges into subgraphs, shared edges with other arrows, self-relations) |

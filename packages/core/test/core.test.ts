@@ -33,10 +33,7 @@ describe('supported diagram types draw', () => {
 
 describe('mermaid syntax the renderer draws, though not word for word', () => {
   const cases: Record<string, string> = {
-    'graph with no direction': 'graph\n  A[One] --> B[Two]',
-    'header ending in ;': 'graph TD;\n  A[One] --> B[Two];',
     'line breaks in labels': 'flowchart LR\n  A[Line one<br/>Line two] --> B[x]',
-    ':::style shorthand': 'flowchart LR\n  A[x]:::warn --> B[y]',
     'parentheses in a label': 'flowchart LR\n  A[call foo(x)] --> B',
     'direction in a subgraph': 'flowchart TD\n  subgraph S [Group]\n    direction LR\n    A[x] --> B[y]\n  end',
     'a tab or emoji in a comment': 'flowchart LR\n  %%\tnote 🚀\n  A[x] --> B[y]',
@@ -57,7 +54,9 @@ describe('mermaid syntax the renderer draws, though not word for word', () => {
     'a hyphenated id before a thick arrow': 'flowchart LR\n  service-x ==> B',
     'a range in a class member': 'classDiagram\n  class Item {\n    +String[1..3] items\n  }',
     'a quoted state name with :::': 'stateDiagram-v2\n  state "Cache:::v2" as C\n  [*] --> C',
-    'every edge it draws': 'flowchart LR\n  A --> B --- C -.-> D -.- E ==> F === G\n  H <--> I <-.-> J <==> K ---> L <---> M\n  N -- one --> O -. two .-> P == three ==> Q',
+    'a quoted state name with an arrow': 'stateDiagram-v2\n  state "input --> output" as S\n  [*] --> S',
+    'a quoted text-edge label': 'flowchart LR\n  A -- "approved" --> B',
+    'every edge it draws': 'flowchart LR\n  A --> B --- C -.-> D -.- E ==> F === G\n  H <--> I <-.-> J <==> K ---> L <---> M\n  N -- one --> O -. two .-> P == three ==> Q\n  R -- "four" --> S',
   }
   for (const [name, source] of Object.entries(cases)) {
     test(name, () => {
@@ -99,7 +98,7 @@ describe('fallback leaves the block exactly as it was', () => {
     assert.match(unchanged('graph LR\n  A[𝐀𝐁𝐂 x] --> B[ok]'), /wide/)
     assert.match(unchanged('graph LR\n  A[🇺🇸 x] --> B[ok]'), /wide/)
     assert.match(unchanged('graph LR\n  A[a\tb] --> B[ok]'), /control/)
-    assert.match(unchanged('stateDiagram-v2\n  [*] --> A\n  note right of A: important'), /leaves out "important"/)
+    assert.match(unchanged('stateDiagram-v2\n  [*] --> A\n  note right of A: important'), /notes are not drawn/)
     assert.match(unchanged('classDiagram\n  class Shape\n  <<interface>> Shape'), /leaves out "interface"/)
     assert.match(unchanged('erDiagram\n  C }o..o{ D : maybe'), /unsupported arrow/)
     assert.match(unchanged('flowchart TD\n  direction LR\n  A[x] --> B[y]'), /direction outside a subgraph/)
@@ -125,8 +124,8 @@ describe('fallback leaves the block exactly as it was', () => {
   })
 
   test('edges the renderer would drop', () => {
-    assert.match(unchanged('graph LR;\n  A[One] --> B[Two]; B --> A;'), /leaves out 1 of 2 edges/)
-    assert.match(unchanged('flowchart LR\n  A[First]:::hot-->B[Second]\n  B[Second]'), /leaves out 1 of 1 edges/)
+    assert.match(unchanged('graph LR\n  A[One] --> B[Two]; B --> A;'), /several statements/)
+    assert.match(unchanged('flowchart LR\n  A[First]:::hot-->B[Second]\n  B[Second]'), /leaves out/)
     assert.match(unchanged('classDiagram\n  Order "1" o-- "0..*" LineItem : contains'), /multiplicities/)
     assert.match(unchanged('flowchart LR\n  A[first] --> B\n  A["first:::second"] --> C'), /leaves out "second"/)
   })
@@ -137,16 +136,18 @@ describe('fallback leaves the block exactly as it was', () => {
     assert.ok(performance.now() - started < 500)
   })
 
-  test('a state transition with :::style keeps its exit, and labels keep theirs', () => {
-    for (const source of ['stateDiagram-v2\n  [*] --> Idle\n  Idle:::active --> [*]', 'stateDiagram-v2\n  [*] --> Idle\n  Idle:::active-->[*]']) {
-      const result = drawDiagram(source)
-      assert.ok(result.ok, result.ok ? '' : result.reason)
-      assert.match(result.drawing, /╔/)
-    }
-    const labelled = drawDiagram('stateDiagram-v2\n  Idle --> Run: stats:::check')
-    assert.ok(labelled.ok && labelled.drawing.includes('stats:::check'))
-    const quoted = drawDiagram('stateDiagram-v2\n  state "Cache:::v2" as C\n  [*] --> C')
-    assert.ok(quoted.ok && quoted.drawing.includes('Cache:::v2'))
+  test('what the renderer would draw wrongly', () => {
+    assert.match(unchanged('graph\n  A[One] --> B[Two]'), /parse error/)
+    assert.match(unchanged('graph TD;\n  A[One] --> B[Two];'), /parse error/)
+    assert.match(unchanged('flowchart LR\n  A[x]:::warn --> B[y]'), /leaves out "warn"/)
+    assert.match(unchanged('stateDiagram-v2\n  [*] --> Idle\n  Idle:::active --> [*]'), /leaves out/)
+    assert.match(unchanged('graph RL\n  A --> B'), /right to left/)
+    assert.match(unchanged('flowchart TD\n  A & B --- C'), /drawn wrongly: shared edges/)
+    assert.match(unchanged('flowchart LR\n  A --> S\n  subgraph S [Grp]\n    X --> Y\n  end'), /edge into subgraph "S"/)
+    assert.match(unchanged('stateDiagram-v2\n  Off --> On\n  state On {\n    X --> Y\n  }'), /edge into subgraph "On"/)
+    assert.match(unchanged('stateDiagram-v2\n  A --> B\n  note right of A\n    B --> A\n  end note'), /notes are not drawn/)
+    assert.match(unchanged('classDiagram\n  Folder o-- Folder : children'), /itself/)
+    assert.match(unchanged('graph LR\n  A & B --> C; C --> A'), /several statements/)
   })
 
   // Each of these takes beautiful-mermaid about 25 seconds to give up on.

@@ -56,6 +56,25 @@ export function layoutProblem(graph: Graph): string | undefined {
 
 const blocked = (target: string) => `edges into "${target}" can't be routed`
 
+/** What the renderer would draw wrongly in this flowchart or state diagram. */
+export function drawingProblem(graph: Graph): string | undefined {
+  // An edge into a subgraph is drawn to a stray node of the same name, or
+  // dropped in a state diagram.
+  const subgraphs = new Set<string>()
+  const visit = (list: Graph['subgraphs']) => list.forEach(subgraph => (subgraphs.add(subgraph.id), visit(subgraph.children)))
+  visit(graph.subgraphs)
+  const edge = graph.edges.find(edge => subgraphs.has(edge.source) || subgraphs.has(edge.target))
+  if (edge) return `edge into subgraph "${subgraphs.has(edge.target) ? edge.target : edge.source}"`
+  // Top-down, edges sharing an end are bundled and drawn with one arrowhead
+  // at the target, whatever arrows they had (see layoutProblem).
+  if (graph.direction === 'LR' || graph.direction === 'RL') return undefined
+  const plain = (edge: Edge) => edge.hasArrowEnd && !edge.hasArrowStart
+  for (const edges of [...group(graph, edge => edge.target).values(), ...group(graph, edge => edge.source).values()]) {
+    if (edges.length >= 2 && edges.some(edge => !edge.label) && !edges.every(plain)) return 'shared edges without single arrowheads'
+  }
+  return undefined
+}
+
 // Nodes the renderer may place in the first row: every node not yet reached
 // by an edge from a node before it (its roots), and every node in a subgraph
 // laid out left to right, which can sit level with its parent.

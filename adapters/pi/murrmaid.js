@@ -5581,6 +5581,19 @@ function layoutProblem(graph) {
   return void 0;
 }
 var blocked = (target) => `edges into "${target}" can't be routed`;
+function drawingProblem(graph) {
+  const subgraphs = /* @__PURE__ */ new Set();
+  const visit = (list) => list.forEach((subgraph) => (subgraphs.add(subgraph.id), visit(subgraph.children)));
+  visit(graph.subgraphs);
+  const edge = graph.edges.find((edge2) => subgraphs.has(edge2.source) || subgraphs.has(edge2.target));
+  if (edge) return `edge into subgraph "${subgraphs.has(edge.target) ? edge.target : edge.source}"`;
+  if (graph.direction === "LR" || graph.direction === "RL") return void 0;
+  const plain = (edge2) => edge2.hasArrowEnd && !edge2.hasArrowStart;
+  for (const edges of [...group(graph, (edge2) => edge2.target).values(), ...group(graph, (edge2) => edge2.source).values()]) {
+    if (edges.length >= 2 && edges.some((edge2) => !edge2.label) && !edges.every(plain)) return "shared edges without single arrowheads";
+  }
+  return void 0;
+}
 function firstRowCandidates(graph) {
   const candidates = /* @__PURE__ */ new Set();
   const reached = /* @__PURE__ */ new Set();
@@ -5658,7 +5671,6 @@ var STYLE_LINE = /^(style|classDef|linkStyle|click|accTitle|accDescr)\b/;
 var CLASS_LINE = /^class\s/;
 var XY_DATA_LINE = /^(bar|line)\b/;
 var LINE_BREAK = /<br\s*\/?>/gi;
-var STYLE_SHORTHAND = /:::[\p{L}\p{N}_]+(?:-[\p{L}\p{N}_]+)*/gu;
 var EDGE_RUN = /<?[-=.~]{2,}>?/g;
 var FLOWCHART_EDGES = /* @__PURE__ */ new Set(["-->", "--->", "<-->", "<--->", "---", "-.->", "<-.->", "-.-", "==>", "<==>", "==="]);
 var TEXT_EDGE_OPEN = /* @__PURE__ */ new Set(["--", "-.", "==", "<--", "<-.", "<=="]);
@@ -5685,10 +5697,11 @@ function drawDiagram(source, options = {}) {
   if (header === "---") return fail("front matter is not supported");
   if (type === void 0) return fail(`unsupported diagram type "${header.split(/\s+/)[0]}"`);
   if (source.length > MAX_SOURCE_CHARS || lines.length > MAX_SOURCE_LINES) return fail("diagram too large");
-  const body = lines.slice(first + 1).map((line) => type === "state" ? stateStyles(line) : line);
-  const text = [type === "flowchart" ? flowchartHeader(header) : header, ...body].join("\n");
+  const body = lines.slice(first + 1);
+  const text = [header, ...body].join("\n");
   if (body.some((line) => NOT_ONE_COLUMN.test(line))) return fail("wide, zero-width or control characters");
   if (type === "flowchart" && topLevelDirection(body)) return fail("direction outside a subgraph");
+  if (/\bRL\s*;?$/i.test(header) || body.some((line) => /^\s*direction\s+RL\b/i.test(line))) return fail("right to left is drawn left to right");
   let block = false;
   const content = contentLines(type, body).map((line) => {
     const read = readLine(type, line, block);
@@ -5706,6 +5719,8 @@ function drawDiagram(source, options = {}) {
       if (graph.edges.length < arrows) return fail(`drawing leaves out ${arrows - graph.edges.length} of ${arrows} edges`);
       const layout = layoutProblem(graph);
       if (layout !== void 0) return fail(`layout would not finish: ${layout}`);
+      const wrong = drawingProblem(graph);
+      if (wrong !== void 0) return fail(`would be drawn wrongly: ${wrong}`);
     }
     drawing = renderMermaidASCII(text, { useAscii: options.ascii === true, colorMode: options.color ? "ansi16" : "none" });
   } catch (error) {
@@ -5719,27 +5734,6 @@ function drawDiagram(source, options = {}) {
   const columns = Math.max(...plain.split("\n").map((line) => [...line].length));
   if (options.width !== void 0 && columns > options.width) return fail(`too wide (${columns} > ${options.width} columns)`);
   return { ok: true, type, drawing };
-}
-function flowchartHeader(header) {
-  const [keyword = "graph", direction = "TD"] = header.replace(/;$/, "").trim().split(/\s+/);
-  return `${keyword} ${direction}`;
-}
-function stateStyles(line) {
-  const style = new RegExp("^" + STYLE_SHORTHAND.source, "u");
-  let shown = "";
-  let quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    if (char === '"') quoted = !quoted;
-    if (char === ":" && !quoted) {
-      const match = style.exec(line.slice(i));
-      if (match === null) return shown + line.slice(i);
-      i += match[0].length - 1;
-      continue;
-    }
-    shown += char;
-  }
-  return shown;
 }
 function topLevelDirection(body) {
   let depth = 0;
@@ -5795,6 +5789,7 @@ function readLine(type, line, inBlock) {
       if (relation === null) return { ...plain, problem: arrow(head.trim()) };
       const [, from, fromCount, , toCount, to, label = ""] = relation;
       if (fromCount !== void 0 || toCount !== void 0) return { ...plain, problem: "multiplicities are not drawn" };
+      if (from === to) return { ...plain, problem: "a class related to itself is not drawn as a loop" };
       return { ...plain, text: [from, to, label].join(" ") };
     }
     case "er": {
@@ -5806,8 +5801,9 @@ function readLine(type, line, inBlock) {
       return { ...plain, text: [relation[1], relation[5], relation[6]].join(" ") };
     }
     case "state": {
+      if (/^note\b/i.test(text)) return { ...plain, problem: "state notes are not drawn" };
       const described = /^([\p{L}\p{N}_]+)\s*:/u.exec(text);
-      const edges = head.includes("-->") ? 1 : 0;
+      const edges = text.replace(/"[^"]*"/g, "").split(":")[0].includes("-->") ? 1 : 0;
       return { ...plain, edges, ids: [...aliasIds(type, text), ...described ? [described[1]] : []] };
     }
     default:
@@ -5854,7 +5850,7 @@ function flowchartLine(line) {
     shown = shown.slice(0, start) + " ".repeat(end - start) + shown.slice(end);
     outside = outside.slice(0, start) + " ".repeat(end - start) + outside.slice(end);
   };
-  for (const match of outside.matchAll(STYLE_SHORTHAND)) blank(match.index, match.index + match[0].length);
+  if (/;\s*\S/.test(outside)) return { text, ids, edges: 0, problem: "several statements on one line" };
   if (/^subgraph(\s|$)/.test(text)) return { text: shown, ids, edges: 0 };
   const marker = (i) => /[ox]/.test(outside[i] ?? "");
   const space = (i) => /\s/.test(outside[i] ?? " ");
@@ -5869,7 +5865,7 @@ function flowchartLine(line) {
     if (!found.startsWith("<") && marker(start - 1) && space(start - 2)) return fail(start - 1, end + 1);
     if (!found.endsWith(">") && marker(end)) return fail(start, end + 1);
     if (TEXT_EDGE_OPEN.has(found) && space(end)) {
-      const label = outside.slice(end).search(/\S/);
+      const label = text.slice(end).search(/\S/);
       TEXT_EDGE_CLOSE.lastIndex = end + label + 1;
       const close = label === -1 ? null : TEXT_EDGE_CLOSE.exec(outside);
       if (close === null) return fail(start, end);
@@ -5958,7 +5954,7 @@ var CACHE_SIZE = 128;
 var cache = /* @__PURE__ */ new Map();
 function cachedDraw(source, options) {
   const { width } = options;
-  if (source.length > MAX_SOURCE_CHARS || width !== void 0 && !Number.isFinite(width)) return drawDiagram(source, options);
+  if (source.length > MAX_SOURCE_CHARS || width !== void 0 && !Number.isFinite(width)) return Object.freeze(drawDiagram(source, options));
   const key = JSON.stringify([width ?? null, options.ascii === true, options.color === true, source]);
   let result = cache.get(key);
   if (result !== void 0) {
