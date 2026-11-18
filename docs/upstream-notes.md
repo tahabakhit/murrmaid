@@ -84,7 +84,12 @@ Each is a candidate upstream issue. None has been filed yet.
     state diagram, a transition into a composite state is dropped.
 26. Top-down, edges sharing an end are bundled with one arrowhead at the
     target: `A & B --- C` gains arrowheads, `<-->` loses its start.
-27. A class related to itself (`Folder o-- Folder`) is drawn without a loop.
+27. A class or entity related to itself (`Folder o-- Folder`) is drawn
+    without a loop.
+28. Two class or ER relations between one pair are drawn on one path, the
+    later over the earlier.
+29. A text-edge label ends at the first closing arrow even inside quotes:
+    `A -- "x --> y" --> B` links A to a node `y`.
 
 ## How murrmaid copes
 
@@ -93,7 +98,7 @@ Each is a candidate upstream issue. None has been filed yet.
 | 1 | refuses flowcharts and state diagrams with those layouts before drawing, and any with more than 24 nodes (`packages/core/src/layout.ts`) |
 | 2, 7, 8, 9, 10, 11, 13 | the word check finds a missing word and falls back |
 | 12, 14, 15, 16 | falls back on any arrow not drawn as written |
-| 17 | falls back: `:::name` is not exempt from the word check |
+| 17 | falls back on `:::name` style shorthand |
 | 3 | removes `%%` lines before drawing |
 | 4 | falls back (front matter) |
 | 5 | falls back (parse error) |
@@ -102,4 +107,4 @@ Each is a candidate upstream issue. None has been filed yet.
 | 19, 20 | drawn as is |
 | 21, 22 | falls back on several statements on a line, or when the renderer's parse has fewer edges than the source has arrows |
 | 23 | falls back on multiplicities |
-| 24, 25, 26, 27 | falls back (right to left, edges into subgraphs, shared edges with other arrows, self-relations) |
+| 24, 25, 26, 27, 28, 29 | falls back (right to left, edges into subgraphs, shared edges with other arrows, self-relations, repeated pairs, quoted closing arrows) |

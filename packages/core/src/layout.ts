@@ -69,10 +69,27 @@ export function drawingProblem(graph: Graph): string | undefined {
   // at the target, whatever arrows they had (see layoutProblem).
   if (graph.direction === 'LR' || graph.direction === 'RL') return undefined
   const plain = (edge: Edge) => edge.hasArrowEnd && !edge.hasArrowStart
-  for (const edges of [...group(graph, edge => edge.target).values(), ...group(graph, edge => edge.source).values()]) {
-    if (edges.length >= 2 && edges.some(edge => !edge.label) && !edges.every(plain)) return 'shared edges without single arrowheads'
-  }
+  for (const edges of bundles(graph)) if (!edges.every(plain)) return 'shared edges without single arrowheads'
   return undefined
+}
+
+// Groups of edges the renderer may bundle, as layoutProblem reads them: two
+// or more unlabelled edges of one style into one target, or out of a source
+// whose edges are all unlabelled.
+function bundles(graph: Graph): Edge[][] {
+  const found: Edge[][] = []
+  const unlabelled = (edges: Edge[]) => edges.every(edge => !edge.label)
+  for (const edges of group(graph, edge => edge.target).values()) {
+    if (edges.length >= 2 && unlabelled(edges) && edges.every(edge => edge.style === edges[0]!.style)) found.push(edges)
+  }
+  for (const edges of group(graph, edge => edge.source).values()) {
+    if (!unlabelled(edges)) continue
+    for (const style of new Set(edges.map(edge => edge.style))) {
+      const same = edges.filter(edge => edge.style === style)
+      if (same.length >= 2) found.push(same)
+    }
+  }
+  return found
 }
 
 // Nodes the renderer may place in the first row: every node not yet reached

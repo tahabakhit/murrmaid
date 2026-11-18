@@ -113,7 +113,12 @@ export function drawDiagram(source: string, options: Options = {}): Result {
   const text = [header, ...body].join('\n')
   if (body.some(line => NOT_ONE_COLUMN.test(line))) return fail('wide, zero-width or control characters')
   if (type === 'flowchart' && topLevelDirection(body)) return fail('direction outside a subgraph')
-  if (/\bRL\s*;?$/i.test(header) || body.some(line => /^\s*direction\s+RL\b/i.test(line))) return fail('right to left is drawn left to right')
+  const rightToLeft = /\bRL\s*;?$/i.test(header) || body.some(line => /^\s*direction\s+RL\s*;?\s*$/i.test(line))
+  if ((type === 'flowchart' || type === 'state') && rightToLeft) return fail('right to left is drawn left to right')
+  // `A:::name` styles a node; the renderer mishandles it in several places.
+  if ((type === 'flowchart' || type === 'state') && body.some(line => line.replace(/"[^"]*"/g, '').includes(':::'))) {
+    return fail('style shorthand (:::) is not supported')
+  }
   // Lines inside `Class {` or `ENTITY {` blocks are members, not relations.
   let block = false
   const content = contentLines(type, body).map(line => {
@@ -124,6 +129,10 @@ export function drawDiagram(source: string, options: Options = {}): Result {
   })
   const problem = content.find(line => line.problem !== undefined)?.problem
   if (problem !== undefined) return fail(problem)
+  // Two relations between one pair of classes or entities are drawn on one
+  // path, the later over the earlier.
+  const pairs = content.flatMap(line => (line.pair === undefined ? [] : [line.pair]))
+  if (new Set(pairs).size < pairs.length) return fail('two relations between one pair are drawn as one')
 
   let drawing: string
   try {
@@ -193,7 +202,11 @@ interface Line {
   edges: number
   /** Why the line would not be drawn as written, if it wouldn't. */
   problem?: string
+  /** The two ends of a class or ER relation, in either order. */
+  pair?: string
 }
+
+const pairOf = (a: string, b: string) => JSON.stringify([a, b].sort())
 
 const arrow = (text: string) => `unsupported arrow "${text}"`
 
@@ -237,7 +250,7 @@ function readLine(type: DiagramType, line: string, inBlock: boolean): Line {
       const [, from, fromCount, , toCount, to, label = ''] = relation
       if (fromCount !== undefined || toCount !== undefined) return { ...plain, problem: 'multiplicities are not drawn' }
       if (from === to) return { ...plain, problem: 'a class related to itself is not drawn as a loop' }
-      return { ...plain, text: [from, to, label].join(' ') }
+      return { ...plain, text: [from, to, label].join(' '), pair: pairOf(from!, to!) }
     }
     case 'er': {
       if (inBlock || !RELATION_LINE.test(head)) return plain
@@ -245,7 +258,9 @@ function readLine(type: DiagramType, line: string, inBlock: boolean): Line {
       if (relation === null || !ER_ENDS.has(sorted(relation[2]!)) || !ER_ENDS.has(sorted(relation[4]!))) {
         return { ...plain, problem: arrow(head.trim()) }
       }
-      return { ...plain, text: [relation[1], relation[5], relation[6]].join(' ') }
+      const [, from, , , , to, label] = relation
+      if (from === to) return { ...plain, problem: 'an entity related to itself is not drawn as a loop' }
+      return { ...plain, text: [from, to, label].join(' '), pair: pairOf(from!, to!) }
     }
     case 'state': {
       // `S1 : The first state` shows the description in place of S1.
@@ -286,7 +301,8 @@ function flowchartLine(line: string): Line {
       quoted = char !== '"'
     } else if (char === '"') {
       quoted = true
-    } else if (depth === 0 && char === '|') {
+    } else if (depth === 0 && char === '|' && (edgeLabel || /[-=.>]\s*$/.test(outside))) {
+      // `-->|label|`: only right after an arrow; elsewhere a pipe is text.
       edgeLabel = !edgeLabel
     } else if (edgeLabel) {
       // inside |edge label|
@@ -318,22 +334,24 @@ function flowchartLine(line: string): Line {
   const marker = (i: number) => /[ox]/.test(outside[i] ?? '')
   const space = (i: number) => /\s/.test(outside[i] ?? ' ')
   const runs = new RegExp(EDGE_RUN.source, 'g')
-  let edges = 0
+  const spans: [number, number][] = []
   for (let match = runs.exec(outside); match !== null; match = runs.exec(outside)) {
     const found = match[0]
     const start = match.index
     let end = start + found.length
     let last = found
-    const fail = (from: number, to: number) => ({ text, ids, edges, problem: arrow(text.slice(from, to).trim()) })
+    const fail = (from: number, to: number) => ({ text, ids, edges: 0, problem: arrow(text.slice(from, to).trim()) })
     if (!found.startsWith('<') && marker(start - 1) && space(start - 2)) return fail(start - 1, end + 1)
     if (!found.endsWith('>') && marker(end)) return fail(start, end + 1)
     if (TEXT_EDGE_OPEN.has(found) && space(end)) {
       // The label starts at the first character after the opening, quoted
       // or not; its end is looked for outside quotes.
       const label = text.slice(end).search(/\S/)
+      // The renderer looks for the end in the raw text, quotes and all; a
+      // label it would end early, inside quotes, falls back.
       TEXT_EDGE_CLOSE.lastIndex = end + label + 1
-      const close = label === -1 ? null : TEXT_EDGE_CLOSE.exec(outside)
-      if (close === null) return fail(start, end)
+      const close = label === -1 ? null : TEXT_EDGE_CLOSE.exec(text)
+      if (close === null || outside.slice(close.index + 1, close.index + close[0].length) !== close[1]) return fail(start, end)
       last = close[1]!
       const closeStart = close.index + 1
       blank(start, end)
@@ -346,7 +364,13 @@ function flowchartLine(line: string): Line {
       return fail(start, end)
     }
     if (!last.endsWith('>') && marker(end)) return fail(start, end + 1)
-    edges++
+    spans.push([start, end])
   }
+  // `A & B --> C --> D & E` is 2 + 2 edges: each arrow links every node of
+  // the group before it to every node of the group after.
+  const groups = [0, ...spans.flat(), outside.length]
+  const sizes: number[] = []
+  for (let i = 0; i < groups.length; i += 2) sizes.push(outside.slice(groups[i], groups[i + 1]).split('&').length)
+  const edges = sizes.slice(1).reduce((sum, size, i) => sum + size * sizes[i]!, 0)
   return { text: shown, ids, edges }
 }

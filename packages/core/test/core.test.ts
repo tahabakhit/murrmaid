@@ -56,6 +56,10 @@ describe('mermaid syntax the renderer draws, though not word for word', () => {
     'a quoted state name with :::': 'stateDiagram-v2\n  state "Cache:::v2" as C\n  [*] --> C',
     'a quoted state name with an arrow': 'stateDiagram-v2\n  state "input --> output" as S\n  [*] --> S',
     'a quoted text-edge label': 'flowchart LR\n  A -- "approved" --> B',
+    'a pipe in a text-edge label': 'flowchart LR\n  A -- ready | waiting --> B',
+    'a labelled edge beside an undirected one': 'graph TD\n  A --- B\n  A -->|no| C',
+    'an ER attribute called direction': 'erDiagram\n  CUSTOMER {\n    direction RL\n  }\n  CUSTOMER ||--o{ ORDER : places',
+    'grouped edges': 'flowchart LR\n  A & B --> C --> D',
     'every edge it draws': 'flowchart LR\n  A --> B --- C -.-> D -.- E ==> F === G\n  H <--> I <-.-> J <==> K ---> L <---> M\n  N -- one --> O -. two .-> P == three ==> Q\n  R -- "four" --> S',
   }
   for (const [name, source] of Object.entries(cases)) {
@@ -118,14 +122,14 @@ describe('fallback leaves the block exactly as it was', () => {
     assert.match(unchanged('sequenceDiagram\n  A<<->>B: hi'), /unsupported arrow/)
     assert.match(unchanged('erDiagram\n  A ||--|| B : x\n  A }o--|| B : x'), /unsupported arrow "A }o--\|\| B"/)
     assert.match(unchanged('classDiagram\n  A <|--|> B\n  A --> B'), /unsupported arrow "A <\|--\|> B"/)
-    assert.match(unchanged('flowchart LR\n  A[Start]:::warn ---xB[Done]'), /unsupported arrow "---x"/)
+    assert.match(unchanged('flowchart LR\n  A[Start] ---xB[Done]'), /unsupported arrow "---x"/)
     assert.match(unchanged('classDiagram\n  Group o-- Member\n  class Admin\n  Member<|--Admin'), /unsupported arrow "Member<\|--Admin"/)
     assert.match(unchanged('classDiagram\n  Car o-- Wheel\n  Wheel -- Road'), /unsupported arrow "Wheel -- Road"/)
   })
 
   test('edges the renderer would drop', () => {
     assert.match(unchanged('graph LR\n  A[One] --> B[Two]; B --> A;'), /several statements/)
-    assert.match(unchanged('flowchart LR\n  A[First]:::hot-->B[Second]\n  B[Second]'), /leaves out/)
+    assert.match(unchanged('flowchart LR\n  A[First]:::hot-->B[Second]\n  B[Second]'), /style shorthand/)
     assert.match(unchanged('classDiagram\n  Order "1" o-- "0..*" LineItem : contains'), /multiplicities/)
     assert.match(unchanged('flowchart LR\n  A[first] --> B\n  A["first:::second"] --> C'), /leaves out "second"/)
   })
@@ -139,8 +143,8 @@ describe('fallback leaves the block exactly as it was', () => {
   test('what the renderer would draw wrongly', () => {
     assert.match(unchanged('graph\n  A[One] --> B[Two]'), /parse error/)
     assert.match(unchanged('graph TD;\n  A[One] --> B[Two];'), /parse error/)
-    assert.match(unchanged('flowchart LR\n  A[x]:::warn --> B[y]'), /leaves out "warn"/)
-    assert.match(unchanged('stateDiagram-v2\n  [*] --> Idle\n  Idle:::active --> [*]'), /leaves out/)
+    assert.match(unchanged('flowchart LR\n  A[x]:::warn --> B[y]'), /style shorthand/)
+    assert.match(unchanged('stateDiagram-v2\n  [*] --> Idle\n  Idle:::active --> [*]'), /style shorthand/)
     assert.match(unchanged('graph RL\n  A --> B'), /right to left/)
     assert.match(unchanged('flowchart TD\n  A & B --- C'), /drawn wrongly: shared edges/)
     assert.match(unchanged('flowchart LR\n  A --> S\n  subgraph S [Grp]\n    X --> Y\n  end'), /edge into subgraph "S"/)
@@ -148,6 +152,12 @@ describe('fallback leaves the block exactly as it was', () => {
     assert.match(unchanged('stateDiagram-v2\n  A --> B\n  note right of A\n    B --> A\n  end note'), /notes are not drawn/)
     assert.match(unchanged('classDiagram\n  Folder o-- Folder : children'), /itself/)
     assert.match(unchanged('graph LR\n  A & B --> C; C --> A'), /several statements/)
+    assert.match(unchanged('stateDiagram-v2\n  Idle:::active --> Run'), /style shorthand/)
+    assert.match(unchanged('flowchart LR\n  A[First<br/>step] & B --> C\n  C-->B'), /leaves out 1 of 3 edges/)
+    assert.match(unchanged('classDiagram\n  Bank o-- Account\n  Bank --> Account : owns'), /one pair/)
+    assert.match(unchanged('erDiagram\n  A ||--o{ B : has\n  B }|--|| A : in'), /one pair/)
+    assert.match(unchanged('erDiagram\n  EMPLOYEE |o--o| EMPLOYEE : manages'), /itself/)
+    assert.match(unchanged('flowchart LR\n  A -- "x<br/> --> y" --> B\n  B --> C'), /unsupported arrow/)
   })
 
   // Each of these takes beautiful-mermaid about 25 seconds to give up on.
