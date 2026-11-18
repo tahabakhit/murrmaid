@@ -81,7 +81,10 @@ function group(graph: Graph, end: (edge: Edge) => string): Map<string, Edge[]> {
   const groups = new Map<string, Edge[]>()
   for (const edge of graph.edges) {
     if (edge.source === edge.target || !graph.nodes.has(edge.source) || !graph.nodes.has(edge.target)) continue
-    groups.set(end(edge), [...(groups.get(end(edge)) ?? []), edge])
+    const key = end(edge)
+    const edges = groups.get(key)
+    if (edges) edges.push(edge)
+    else groups.set(key, [edge])
   }
   return groups
 }

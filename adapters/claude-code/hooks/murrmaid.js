@@ -2848,9 +2848,9 @@ function sortSubgraphsByDepth(subgraphs) {
   function getDepth(sg) {
     return sg.parent === null ? 0 : 1 + getDepth(sg.parent);
   }
-  const sorted = [...subgraphs];
-  sorted.sort((a, b) => getDepth(a) - getDepth(b));
-  return sorted;
+  const sorted2 = [...subgraphs];
+  sorted2.sort((a, b) => getDepth(a) - getDepth(b));
+  return sorted2;
 }
 function fillRolesFromCanvas(roleCanvas, canvas, offset, role) {
   for (let x = 0; x < canvas.length; x++) {
@@ -4520,11 +4520,11 @@ function parseRelationshipLine(line) {
   return { entity1, entity2, cardinality1, cardinality2, label, identifying };
 }
 function parseCardinality(str) {
-  const sorted = str.split("").sort().join("");
-  if (sorted === "||") return "one";
-  if (sorted === "o|") return "zero-one";
-  if (sorted === "|}" || sorted === "{|") return "many";
-  if (sorted === "{o" || sorted === "o{") return "zero-many";
+  const sorted2 = str.split("").sort().join("");
+  if (sorted2 === "||") return "one";
+  if (sorted2 === "o|") return "zero-one";
+  if (sorted2 === "|}" || sorted2 === "{|") return "many";
+  if (sorted2 === "{o" || sorted2 === "o{") return "zero-many";
   return null;
 }
 
@@ -5603,7 +5603,10 @@ function group(graph, end) {
   const groups = /* @__PURE__ */ new Map();
   for (const edge of graph.edges) {
     if (edge.source === edge.target || !graph.nodes.has(edge.source) || !graph.nodes.has(edge.target)) continue;
-    groups.set(end(edge), [...groups.get(end(edge)) ?? [], edge]);
+    const key = end(edge);
+    const edges = groups.get(key);
+    if (edges) edges.push(edge);
+    else groups.set(key, [edge]);
   }
   return groups;
 }
@@ -5656,11 +5659,15 @@ var CLASS_LINE = /^class\s/;
 var XY_DATA_LINE = /^(bar|line)\b/;
 var LINE_BREAK = /<br\s*\/?>/gi;
 var STYLE_SHORTHAND = /:::[\p{L}\p{N}_-]+/gu;
-var ALONE = (pattern) => new RegExp(`(?<![\\p{L}\\p{N}_])(?:${pattern})(?![\\p{L}\\p{N}_])`, "gu");
-var FLOWCHART_ARROW = ALONE("[<ox]?(?:-{2,}|={2,}|-\\.+-)[>ox]?");
-var CLASS_ARROW = ALONE("(?:<\\||[<*o])?(?:--|\\.\\.)(?:\\|>|[>*o])?");
-var SEQUENCE_ARROW = /(?:<<)?--?(?:>>|>|x|\))[+-]?/g;
-var ER_CARDINALITY = /[|}][|o](?:--|\.\.)[|o][|{]/g;
+var EDGE_RUN = /<?[-=.~]{2,}>?/g;
+var FLOWCHART_EDGES = /* @__PURE__ */ new Set(["-->", "--->", "<-->", "<--->", "---", "-.->", "<-.->", "-.-", "==>", "<==>", "==="]);
+var TEXT_EDGE_OPEN = /* @__PURE__ */ new Set(["--", "-.", "==", "<--", "<-.", "<=="]);
+var TEXT_EDGE_CLOSE = /* @__PURE__ */ new Set(["-->", "---", ".->", "-.-", "==>", "==="]);
+var SEQUENCE_MESSAGE = /^(\S+?)\s*(--?>?>|--?[)x]|--?>>|--?>)\s*([+-]?)(\S+?)\s*:\s*(.+)$/;
+var CLASS_RELATION = /(?<!\S)(?:<\||[<*o])?(?:--|\.\.)(?:\|>|[>*o])?(?!\S)/g;
+var CLASS_ARROWS = /* @__PURE__ */ new Set(["<|--", "--|>", "<|..", "..|>", "*--", "--*", "o--", "--o", "-->", "<--", "..>", "<..", "--"]);
+var ER_RELATION = /(?<!\S)([|o}{]+)(?:--|\.\.)([|o}{]+)(?!\S)/g;
+var ER_ENDS = /* @__PURE__ */ new Set(["||", "o|", "|}", "{|", "o{"]);
 var WORD = /[\p{L}\p{N}_]+/gu;
 var NOT_ONE_COLUMN = new RegExp(
   "[\\p{Cc}\\p{M}\\p{Emoji_Presentation}\\u{10000}-\\u{10FFFF}\\u{1100}-\\u{115F}\\u{2E80}-\\u{A4CF}\\u{AC00}-\\u{D7A3}\\u{F900}-\\u{FAFF}\\u{FE00}-\\u{FE0F}\\u{FE30}-\\u{FE4F}\\u{FF00}-\\u{FF60}\\u{FFE0}-\\u{FFE6}\\u{00AD}\\u{200B}-\\u{200F}\\u{2060}-\\u{2064}\\u{FEFF}]",
@@ -5678,10 +5685,13 @@ function drawDiagram(source, options = {}) {
   if (header === "---") return fail("front matter is not supported");
   if (type === void 0) return fail(`unsupported diagram type "${header.split(/\s+/)[0]}"`);
   if (source.length > MAX_SOURCE_CHARS || lines.length > MAX_SOURCE_LINES) return fail("diagram too large");
-  const body = lines.slice(first + 1);
+  const body = lines.slice(first + 1).map((line) => type === "state" ? line.replace(STYLE_SHORTHAND, "") : line);
   const text = [type === "flowchart" ? flowchartHeader(header) : header, ...body].join("\n");
   if (body.some((line) => NOT_ONE_COLUMN.test(line))) return fail("wide, zero-width or control characters");
   if (type === "flowchart" && topLevelDirection(body)) return fail("direction outside a subgraph");
+  const content = contentLines(type, body).map((line) => readLine(type, line));
+  const unsupported = content.find((line) => line.unsupported !== void 0)?.unsupported;
+  if (unsupported !== void 0) return fail(`unsupported arrow "${unsupported}"`);
   let drawing;
   try {
     const problem = type === "flowchart" || type === "state" ? layoutProblem(text) : void 0;
@@ -5693,7 +5703,7 @@ function drawDiagram(source, options = {}) {
   drawing = tidy(drawing);
   const plain = drawing.replace(ANSI, "");
   if (plain.trim() === "") return fail("nothing drawn");
-  const missing = missingWords(type, body, plain);
+  const missing = missingWords(type, content, plain);
   if (missing.length > 0) return fail(`drawing leaves out ${missing.slice(0, 3).map((w) => `"${w}"`).join(", ")}`);
   const columns = Math.max(...plain.split("\n").map((line) => [...line].length));
   if (options.width !== void 0 && columns > options.width) return fail(`too wide (${columns} > ${options.width} columns)`);
@@ -5708,7 +5718,7 @@ function topLevelDirection(body) {
   for (const line of body.map((line2) => line2.trim())) {
     if (/^subgraph\b/.test(line)) depth++;
     else if (/^end\b/.test(line)) depth = Math.max(0, depth - 1);
-    else if (depth === 0 && /^direction\b/.test(line)) return true;
+    else if (depth === 0 && /^direction\s+(TB|TD|BT|LR|RL)\s*;?$/i.test(line)) return true;
   }
   return false;
 }
@@ -5720,66 +5730,66 @@ function tidy(drawing) {
   while (end > start && lines[end - 1].trim() === "") end--;
   return lines.slice(start, end).join("\n");
 }
+function contentLines(type, lines) {
+  return lines.map((line) => line.trim()).filter((line) => !STYLE_LINE.test(line)).filter((line) => !(type === "xychart" && XY_DATA_LINE.test(line))).filter((line) => !((type === "flowchart" || type === "state") && CLASS_LINE.test(line)));
+}
 function missingWords(type, lines, drawing) {
   const keywords = new Set(KEYWORDS[type]);
   const shown = new Set(drawing.match(WORD) ?? []);
-  const ids = /* @__PURE__ */ new Set();
-  const body = [];
-  for (const raw of lines) {
-    const line = shownText(type, raw.trim());
-    if (STYLE_LINE.test(line)) continue;
-    if (type === "xychart" && XY_DATA_LINE.test(line)) continue;
-    if ((type === "flowchart" || type === "state") && CLASS_LINE.test(line)) continue;
-    labelledIds(type, line, ids);
-    body.push(line);
-  }
+  const ids = new Set(lines.flatMap((line) => line.ids));
   const missing = /* @__PURE__ */ new Set();
-  for (const line of body) {
-    for (const word of line.match(WORD) ?? []) {
+  for (const { text } of lines) {
+    for (const word of text.match(WORD) ?? []) {
       if (!/\p{L}/u.test(word) || keywords.has(word.toLowerCase()) || ids.has(word) || shown.has(word)) continue;
       missing.add(word);
     }
   }
   return [...missing];
 }
-function shownText(type, line) {
+function readLine(type, line) {
   const text = line.replace(LINE_BREAK, " ");
   switch (type) {
     case "flowchart":
-      return text.replace(STYLE_SHORTHAND, " ").replace(FLOWCHART_ARROW, " ");
-    case "state":
-      return text.replace(STYLE_SHORTHAND, " ");
-    case "class":
-      return text.replace(CLASS_ARROW, " ");
-    case "er":
-      return text.replace(ER_CARDINALITY, " -- ");
+      return flowchartLine(text.replace(STYLE_SHORTHAND, " "));
     case "sequence": {
-      const colon = text.indexOf(":");
-      return colon === -1 ? text : text.slice(0, colon).replace(SEQUENCE_ARROW, " ") + text.slice(colon);
+      const message = SEQUENCE_MESSAGE.exec(text);
+      if (message === null) return { text, ids: aliasIds(type, text) };
+      const [, from, arrow, , to, label] = message;
+      if (arrow.includes("x") || /[<>]/.test(from + to)) return { text, ids: [], unsupported: `${from}${arrow}${to}` };
+      return { text: `${from} ${to}: ${label}`, ids: [] };
+    }
+    case "class": {
+      const arrows = text.match(CLASS_RELATION) ?? [];
+      const unsupported = arrows.find((arrow) => !CLASS_ARROWS.has(arrow));
+      return { text: text.replace(CLASS_RELATION, " "), ids: [], unsupported };
+    }
+    case "er": {
+      const relation = [...text.matchAll(ER_RELATION)].find(([, left, right]) => !ER_ENDS.has(sorted(left)) || !ER_ENDS.has(sorted(right)));
+      return { text: text.replace(ER_RELATION, " -- "), ids: [], unsupported: relation?.[0] };
+    }
+    case "state": {
+      const described = /^([\p{L}\p{N}_]+)\s*:/u.exec(text);
+      return { text, ids: [...aliasIds(type, text), ...described ? [described[1]] : []] };
     }
     default:
-      return text;
+      return { text, ids: [] };
   }
 }
-function labelledIds(type, line, ids) {
-  if (type === "flowchart") flowchartIds(line, ids);
-  if (type === "sequence" || type === "state") {
-    const alias = /^(?:participant|actor|state)\s+("[^"]*"|[\p{L}\p{N}_]+)\s+as\s+("[^"]*"|[\p{L}\p{N}_]+)/u.exec(line);
-    if (alias) ids.add((type === "state" ? alias[2] : alias[1]).replace(/"/g, ""));
-  }
-  if (type === "state") {
-    const described = /^([\p{L}\p{N}_]+)\s*:/u.exec(line);
-    if (described) ids.add(described[1]);
-  }
+var sorted = (chars) => [...chars].sort().join("");
+function aliasIds(type, line) {
+  const alias = /^(?:participant|actor|state)\s+("[^"]*"|[\p{L}\p{N}_]+)\s+as\s+("[^"]*"|[\p{L}\p{N}_]+)/u.exec(line);
+  return alias ? [(type === "state" ? alias[2] : alias[1]).replace(/"/g, "")] : [];
 }
-function flowchartIds(line, ids) {
-  const subgraph = /^subgraph\s+([\p{L}\p{N}_]+)\s*\[/u.exec(line);
-  if (subgraph) ids.add(subgraph[1]);
+function flowchartLine(line) {
+  const text = line.replace(/^(subgraph\s+)\S+?\s*(?=\[)/, "$1");
+  const ids = [];
+  let outside = "";
   let depth = 0;
   let quoted = false;
   let edgeLabel = false;
   let word = "";
-  for (const char of line) {
+  for (const char of text) {
+    const before = quoted || edgeLabel || depth > 0;
     if (quoted) {
       quoted = char !== '"';
     } else if (char === '"') {
@@ -5788,16 +5798,35 @@ function flowchartIds(line, ids) {
       edgeLabel = !edgeLabel;
     } else if (edgeLabel) {
     } else if ("[({".includes(char) || char === ">" && depth === 0 && word !== "") {
-      if (depth === 0 && word !== "") ids.add(word);
+      if (depth === 0 && word !== "") ids.push(word);
       depth++;
     } else if (")]}".includes(char)) {
       depth = Math.max(0, depth - 1);
     } else if (depth === 0 && /[\p{L}\p{N}_]/u.test(char)) {
       word += char;
+      outside += char;
       continue;
     }
     word = "";
+    outside += before || quoted || edgeLabel || depth > 0 || char === "|" ? " ".repeat(char.length) : char;
   }
+  let shown = text;
+  for (const match of outside.matchAll(EDGE_RUN)) {
+    const arrow = match[0];
+    const start = match.index;
+    const end = start + arrow.length;
+    const lone = (i) => /[ox]/.test(outside[i] ?? "") && !/[\p{L}\p{N}_]/u.test(outside[i + (i < start ? -1 : 1)] ?? " ");
+    const circleOrCross = !arrow.startsWith("<") && lone(start - 1) || !arrow.endsWith(">") && lone(end);
+    const space = (i) => /\s/.test(outside[i] ?? " ");
+    const drawn = !circleOrCross && (FLOWCHART_EDGES.has(arrow) || TEXT_EDGE_OPEN.has(arrow) && space(end) || TEXT_EDGE_CLOSE.has(arrow) && space(start - 1));
+    if (!drawn) {
+      const from = circleOrCross && lone(start - 1) ? start - 1 : start;
+      const to = circleOrCross && lone(end) ? end + 1 : end;
+      return { text, ids, unsupported: text.slice(from, to) };
+    }
+    shown = shown.slice(0, start) + " ".repeat(arrow.length) + shown.slice(end);
+  }
+  return { text: shown, ids };
 }
 
 // packages/core/src/fences.ts
@@ -5867,7 +5896,9 @@ function scan(markdown, options = {}) {
 var CACHE_SIZE = 128;
 var cache = /* @__PURE__ */ new Map();
 function cachedDraw(source, options) {
-  const key = JSON.stringify([options.width ?? null, options.ascii === true, options.color === true, source]);
+  const { width } = options;
+  if (source.length > MAX_SOURCE_CHARS || width !== void 0 && !Number.isFinite(width)) return drawDiagram(source, options);
+  const key = JSON.stringify([width ?? null, options.ascii === true, options.color === true, source]);
   let result = cache.get(key);
   if (result !== void 0) {
     cache.delete(key);

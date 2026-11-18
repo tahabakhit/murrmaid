@@ -2,7 +2,7 @@
 // fence replaced by a fenced Unicode drawing, or left exactly as it was when
 // the diagram can't be drawn well. Pure and synchronous: no I/O, no host.
 
-import { drawDiagram, type Options, type Result } from './diagram.ts'
+import { drawDiagram, MAX_SOURCE_CHARS, type Options, type Result } from './diagram.ts'
 import { findFences } from './fences.ts'
 
 export { drawDiagram, type DiagramType, type Options, type Result } from './diagram.ts'
@@ -50,7 +50,10 @@ const CACHE_SIZE = 128
 const cache = new Map<string, Result>()
 
 function cachedDraw(source: string, options: Options): Result {
-  const key = JSON.stringify([options.width ?? null, options.ascii === true, options.color === true, source])
+  // A source too large to draw, or an odd width, is not worth keeping.
+  const { width } = options
+  if (source.length > MAX_SOURCE_CHARS || (width !== undefined && !Number.isFinite(width))) return drawDiagram(source, options)
+  const key = JSON.stringify([width ?? null, options.ascii === true, options.color === true, source])
   let result = cache.get(key)
   if (result !== undefined) {
     cache.delete(key) // most recently used last

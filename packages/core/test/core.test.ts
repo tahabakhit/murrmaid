@@ -44,8 +44,11 @@ describe('mermaid syntax the renderer draws, though not word for word', () => {
     'state description': 'stateDiagram-v2\n  S1 : The first state\n  [*] --> S1',
     'state class line': 'stateDiagram-v2\n  classDef bad fill:red\n  Idle --> Run\n  class Idle bad',
     'ER zero-or-one': 'erDiagram\n  CUSTOMER |o--o| ORDER : places',
-    'sequence -x arrow': 'sequenceDiagram\n  Alice-xJohn: Hello',
     'class o-- arrow': 'classDiagram\n  Car o-- Wheel',
+    'a hyphenated sequence name': 'sequenceDiagram\n  Client->>api-xray: ping',
+    'a hyphenated subgraph id': 'flowchart TD\n  subgraph web-app [web]\n    A[x] --> B[y]\n  end',
+    'a node called direction': 'flowchart LR\n  direction[North] --> B[South]',
+    'every edge it draws': 'flowchart LR\n  A --> B --- C -.-> D -.- E ==> F === G\n  H <--> I <-.-> J <==> K ---> L <---> M\n  N -- one --> O -. two .-> P == three ==> Q',
   }
   for (const [name, source] of Object.entries(cases)) {
     test(name, () => {
@@ -89,8 +92,30 @@ describe('fallback leaves the block exactly as it was', () => {
     assert.match(unchanged('graph LR\n  A[a\tb] --> B[ok]'), /control/)
     assert.match(unchanged('stateDiagram-v2\n  [*] --> A\n  note right of A: important'), /leaves out "important"/)
     assert.match(unchanged('classDiagram\n  class Shape\n  <<interface>> Shape'), /leaves out "interface"/)
-    assert.match(unchanged('erDiagram\n  C }o..o{ D : maybe'), /nothing drawn|leaves out/)
+    assert.match(unchanged('erDiagram\n  C }o..o{ D : maybe'), /unsupported arrow/)
     assert.match(unchanged('flowchart TD\n  direction LR\n  A[x] --> B[y]'), /direction outside a subgraph/)
+    assert.match(unchanged('flowchart TD\n  Direction TD\n  A[x] --> B[y]'), /direction outside a subgraph/)
+  })
+
+  // The renderer drops these edges, or draws them as a plain arrow, even
+  // when every word still shows elsewhere.
+  test('arrows not drawn as written', () => {
+    assert.match(unchanged('flowchart LR\n  A --o B\n  B --> C'), /unsupported arrow "--o"/)
+    assert.match(unchanged('flowchart LR\n  A --x B\n  B --> C'), /unsupported arrow "--x"/)
+    assert.match(unchanged('flowchart LR\n  A x--x B\n  B --> C'), /unsupported arrow "x--x"/)
+    assert.match(unchanged('flowchart LR\n  A ~~~ B\n  B --> C'), /unsupported arrow "~~~"/)
+    assert.match(unchanged('flowchart LR\n  A ----> B\n  B --> C'), /unsupported arrow "---->"/)
+    assert.match(unchanged('flowchart LR\n  A -.text.-> B\n  B --> C'), /unsupported arrow/)
+    assert.match(unchanged('sequenceDiagram\n  Alice-xJohn: Hello'), /unsupported arrow "Alice-xJohn"/)
+    assert.match(unchanged('sequenceDiagram\n  A<<->>B: hi'), /unsupported arrow/)
+    assert.match(unchanged('erDiagram\n  A ||--|| B : x\n  A }o--|| B : x'), /unsupported arrow "}o--\|\|"/)
+    assert.match(unchanged('classDiagram\n  A <|--|> B\n  A --> B'), /unsupported arrow "<\|--\|>"/)
+  })
+
+  test('a state transition with :::style keeps its exit', () => {
+    const result = drawDiagram('stateDiagram-v2\n  [*] --> Idle\n  Idle:::active --> [*]')
+    assert.ok(result.ok, result.ok ? '' : result.reason)
+    assert.match(result.drawing, /╔/)
   })
 
   // Each of these takes beautiful-mermaid about 25 seconds to give up on.
@@ -186,6 +211,15 @@ test('a diagram is drawn once however its reply grows', () => {
   const again = scan(`Streaming more text${diagram}`, { width: 80 }).diagrams[0]!.result
   assert.equal(again, first)
   assert.notEqual(scan(`Streaming${diagram}`, { width: 81 }).diagrams[0]!.result, first)
+})
+
+test('the cache keeps no oversized source, and tells widths apart', () => {
+  const huge = fence('graph LR\n  A --> B\n' + '%% x\n'.repeat(5000))
+  assert.notEqual(scan(huge).diagrams[0]!.result, scan(huge).diagrams[0]!.result)
+  const small = fence('graph LR\n  A[Odd] --> B[Width]')
+  assert.ok(scan(small).diagrams[0]!.result.ok)
+  assert.ok(!scan(small, { width: -Infinity }).diagrams[0]!.result.ok)
+  assert.ok(scan(small).diagrams[0]!.result.ok)
 })
 
 test('never throws, whatever the input', () => {

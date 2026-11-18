@@ -50,29 +50,37 @@ Each is a candidate upstream issue. None has been filed yet.
 10. A class annotation on its own line (`<<interface>> Shape`) is not drawn;
     inside the class body it is.
 11. ER attribute comments (`string name "full name"`) are not drawn.
-12. ER relationships with `}o..o{` are not drawn, nor are their entities.
+12. ER relationships with `}o` on the left (`}o..o{`, `}o--||`) are not
+    drawn: `parseCardinality` accepts only `o{`, not its mirror.
 13. The xychart y-axis title is not drawn.
 14. Flowchart edges ending in a circle or cross (`A --o B`, `A --x B`) lose
-    their target node.
+    their target node, and so do `~~~`, `===>`, `-..->`, and `-.text.->`
+    without spaces. `---->` draws a node called `-`.
+15. Sequence `-x` messages are drawn with a filled arrowhead, not a cross,
+    and `A<<->>B` draws an actor called `A<<`.
+16. Class relations `..` and `<|--|>` are not drawn.
+17. A state transition from `Idle:::name` is skipped.
 
 ## Layout
 
-15. Labels with wide characters (CJK, emoji) or characters beyond U+FFFF
+18. Labels with wide characters (CJK, emoji) or characters beyond U+FFFF
     (such as `𝐀` or flags) misalign borders, because widths are counted in
     UTF-16 code units, not terminal columns.
-16. ER relationship labels overlap entity borders (e.g. `││───○╟│`, a label
+19. ER relationship labels overlap entity borders (e.g. `││───○╟│`, a label
     drawn under a border).
-17. Flowchart labels are sometimes one column off centre (`│  Done │`).
+20. Flowchart labels are sometimes one column off centre (`│  Done │`).
 
 ## How murrmaid copes
 
 | Problem | murrmaid |
 | --- | --- |
 | 1 | refuses flowcharts and state diagrams with those layouts before drawing, and any with more than 24 nodes (`packages/core/src/layout.ts`) |
-| 2, 7, 8, 9, 10, 11, 12, 13, 14 | the word check finds a missing word and falls back |
+| 2, 7, 8, 9, 10, 11, 13 | the word check finds a missing word and falls back |
+| 12, 14, 15, 16 | falls back on any arrow not drawn as written |
+| 17 | removes `:::name` from state diagrams before drawing |
 | 3 | removes `%%` lines before drawing |
 | 4 | falls back (front matter) |
 | 5 | rewrites the header to `graph TD` first |
 | 6 | falls back (direction outside a subgraph) |
-| 15 | falls back on wide, zero-width, control or non-BMP characters |
-| 16, 17 | drawn as is |
+| 18 | falls back on wide, zero-width, control or non-BMP characters |
+| 19, 20 | drawn as is |

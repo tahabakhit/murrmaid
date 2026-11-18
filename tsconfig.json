@@ -14,5 +14,6 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["packages/*/src", "packages/*/test", "scripts", "adapters/pi/*.ts"]
+  "include": ["packages/*/src", "packages/*/test", "scripts", "adapters/pi/*.ts",
+    "adapters/pi/test"]
 }

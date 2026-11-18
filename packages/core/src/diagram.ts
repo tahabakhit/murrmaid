@@ -22,7 +22,7 @@ export type DiagramType = 'flowchart' | 'state' | 'sequence' | 'class' | 'er' | 
 
 // Sequence, class, ER and XY diagrams this size draw in well under a second.
 // Flowcharts and state diagrams are limited further in layout.ts.
-const MAX_SOURCE_CHARS = 20_000
+export const MAX_SOURCE_CHARS = 20_000
 const MAX_SOURCE_LINES = 400
 
 // Header lines beautiful-mermaid recognises. A flowchart header without a
@@ -56,16 +56,26 @@ const STYLE_LINE = /^(style|classDef|linkStyle|click|accTitle|accDescr)\b/
 const CLASS_LINE = /^class\s/
 const XY_DATA_LINE = /^(bar|line)\b/
 
-// Syntax inside a line that is not drawn as words: line breaks, `:::name`
-// style shorthand, and arrows whose letters the drawing shows as symbols
-// (flowchart `--o` and `x--x`, sequence `-x`, class `o--`, ER `|o--o{`).
+// Syntax inside a line that is not drawn as words: line breaks and `:::name`
+// style shorthand.
 const LINE_BREAK = /<br\s*\/?>/gi
 const STYLE_SHORTHAND = /:::[\p{L}\p{N}_-]+/gu
-const ALONE = (pattern: string) => new RegExp(`(?<![\\p{L}\\p{N}_])(?:${pattern})(?![\\p{L}\\p{N}_])`, 'gu')
-const FLOWCHART_ARROW = ALONE('[<ox]?(?:-{2,}|={2,}|-\\.+-)[>ox]?')
-const CLASS_ARROW = ALONE('(?:<\\||[<*o])?(?:--|\\.\\.)(?:\\|>|[>*o])?')
-const SEQUENCE_ARROW = /(?:<<)?--?(?:>>|>|x|\))[+-]?/g
-const ER_CARDINALITY = /[|}][|o](?:--|\.\.)[|o][|{]/g
+
+// Arrows are not drawn as words either, but only those beautiful-mermaid
+// draws with their meaning are exempt. Any other arrow falls back: the
+// renderer drops its edge or draws it as a plain arrow (`--o`, `--x`, `~~~`,
+// sequence `-x`, ER `}o`).
+const EDGE_RUN = /<?[-=.~]{2,}>?/g
+const FLOWCHART_EDGES = new Set(['-->', '--->', '<-->', '<--->', '---', '-.->', '<-.->', '-.-', '==>', '<==>', '==='])
+const TEXT_EDGE_OPEN = new Set(['--', '-.', '==', '<--', '<-.', '<=='])
+const TEXT_EDGE_CLOSE = new Set(['-->', '---', '.->', '-.-', '==>', '==='])
+// beautiful-mermaid's own message pattern (src/sequence/parser.ts).
+const SEQUENCE_MESSAGE = /^(\S+?)\s*(--?>?>|--?[)x]|--?>>|--?>)\s*([+-]?)(\S+?)\s*:\s*(.+)$/
+const CLASS_RELATION = /(?<!\S)(?:<\||[<*o])?(?:--|\.\.)(?:\|>|[>*o])?(?!\S)/g
+const CLASS_ARROWS = new Set(['<|--', '--|>', '<|..', '..|>', '*--', '--*', 'o--', '--o', '-->', '<--', '..>', '<..', '--'])
+const ER_RELATION = /(?<!\S)([|o}{]+)(?:--|\.\.)([|o}{]+)(?!\S)/g
+// Each side's characters, sorted, as src/er/parser.ts accepts them.
+const ER_ENDS = new Set(['||', 'o|', '|}', '{|', 'o{'])
 
 const WORD = /[\p{L}\p{N}_]+/gu
 // Characters a terminal draws two columns wide or none, and control
@@ -92,10 +102,14 @@ export function drawDiagram(source: string, options: Options = {}): Result {
   if (type === undefined) return fail(`unsupported diagram type "${header.split(/\s+/)[0]}"`)
   if (source.length > MAX_SOURCE_CHARS || lines.length > MAX_SOURCE_LINES) return fail('diagram too large')
 
-  const body = lines.slice(first + 1)
+  // State diagrams skip a transition written with `:::name`, which only styles.
+  const body = lines.slice(first + 1).map(line => (type === 'state' ? line.replace(STYLE_SHORTHAND, '') : line))
   const text = [type === 'flowchart' ? flowchartHeader(header) : header, ...body].join('\n')
   if (body.some(line => NOT_ONE_COLUMN.test(line))) return fail('wide, zero-width or control characters')
   if (type === 'flowchart' && topLevelDirection(body)) return fail('direction outside a subgraph')
+  const content = contentLines(type, body).map(line => readLine(type, line))
+  const unsupported = content.find(line => line.unsupported !== undefined)?.unsupported
+  if (unsupported !== undefined) return fail(`unsupported arrow "${unsupported}"`)
 
   let drawing: string
   try {
@@ -109,7 +123,7 @@ export function drawDiagram(source: string, options: Options = {}): Result {
   drawing = tidy(drawing)
   const plain = drawing.replace(ANSI, '')
   if (plain.trim() === '') return fail('nothing drawn')
-  const missing = missingWords(type, body, plain)
+  const missing = missingWords(type, content, plain)
   if (missing.length > 0) return fail(`drawing leaves out ${missing.slice(0, 3).map(w => `"${w}"`).join(', ')}`)
   const columns = Math.max(...plain.split('\n').map(line => [...line].length))
   if (options.width !== undefined && columns > options.width) return fail(`too wide (${columns} > ${options.width} columns)`)
@@ -129,7 +143,7 @@ function topLevelDirection(body: string[]): boolean {
   for (const line of body.map(line => line.trim())) {
     if (/^subgraph\b/.test(line)) depth++
     else if (/^end\b/.test(line)) depth = Math.max(0, depth - 1)
-    else if (depth === 0 && /^direction\b/.test(line)) return true
+    else if (depth === 0 && /^direction\s+(TB|TD|BT|LR|RL)\s*;?$/i.test(line)) return true
   }
   return false
 }
@@ -144,26 +158,35 @@ function tidy(drawing: string): string {
   return lines.slice(start, end).join('\n')
 }
 
+// The trimmed lines that add to what a diagram shows.
+function contentLines(type: DiagramType, lines: string[]): string[] {
+  return lines
+    .map(line => line.trim())
+    .filter(line => !STYLE_LINE.test(line))
+    .filter(line => !(type === 'xychart' && XY_DATA_LINE.test(line)))
+    .filter(line => !((type === 'flowchart' || type === 'state') && CLASS_LINE.test(line)))
+}
+
+interface Line {
+  /** The words the drawing should show, with arrows and ids' syntax removed. */
+  text: string
+  /** Ids the drawing shows by a label of their own instead. */
+  ids: string[]
+  /** An arrow the renderer would not draw as written. */
+  unsupported?: string
+}
+
 // beautiful-mermaid does not reject much malformed input: it draws what it
 // understood and drops the rest. So check that every word the source would
 // show (labels, names, messages) appears somewhere in the drawing. Keywords
 // are exempt, and so are ids the drawing replaces with a label of their own.
-function missingWords(type: DiagramType, lines: string[], drawing: string): string[] {
+function missingWords(type: DiagramType, lines: Line[], drawing: string): string[] {
   const keywords = new Set(KEYWORDS[type])
   const shown = new Set(drawing.match(WORD) ?? [])
-  const ids = new Set<string>()
-  const body: string[] = []
-  for (const raw of lines) {
-    const line = shownText(type, raw.trim())
-    if (STYLE_LINE.test(line)) continue
-    if (type === 'xychart' && XY_DATA_LINE.test(line)) continue
-    if ((type === 'flowchart' || type === 'state') && CLASS_LINE.test(line)) continue
-    labelledIds(type, line, ids)
-    body.push(line)
-  }
+  const ids = new Set(lines.flatMap(line => line.ids))
   const missing = new Set<string>()
-  for (const line of body) {
-    for (const word of line.match(WORD) ?? []) {
+  for (const { text } of lines) {
+    for (const word of text.match(WORD) ?? []) {
       if (!/\p{L}/u.test(word) || keywords.has(word.toLowerCase()) || ids.has(word) || shown.has(word)) continue
       missing.add(word)
     }
@@ -171,54 +194,61 @@ function missingWords(type: DiagramType, lines: string[], drawing: string): stri
   return [...missing]
 }
 
-function shownText(type: DiagramType, line: string): string {
+function readLine(type: DiagramType, line: string): Line {
   const text = line.replace(LINE_BREAK, ' ')
   switch (type) {
     case 'flowchart':
-      return text.replace(STYLE_SHORTHAND, ' ').replace(FLOWCHART_ARROW, ' ')
-    case 'state':
-      return text.replace(STYLE_SHORTHAND, ' ')
-    case 'class':
-      return text.replace(CLASS_ARROW, ' ')
-    case 'er':
-      return text.replace(ER_CARDINALITY, ' -- ')
+      return flowchartLine(text.replace(STYLE_SHORTHAND, ' '))
     case 'sequence': {
-      // Only the part before the message's ":" holds an arrow.
-      const colon = text.indexOf(':')
-      return colon === -1 ? text : text.slice(0, colon).replace(SEQUENCE_ARROW, ' ') + text.slice(colon)
+      const message = SEQUENCE_MESSAGE.exec(text)
+      if (message === null) return { text, ids: aliasIds(type, text) }
+      const [, from, arrow, , to, label] = message as unknown as string[]
+      // `-x` is drawn as a plain arrow, and `A<<->>B` as an actor named "A<<".
+      if (arrow!.includes('x') || /[<>]/.test(from! + to!)) return { text, ids: [], unsupported: `${from}${arrow}${to}` }
+      return { text: `${from} ${to}: ${label}`, ids: [] }
+    }
+    case 'class': {
+      const arrows = text.match(CLASS_RELATION) ?? []
+      const unsupported = arrows.find(arrow => !CLASS_ARROWS.has(arrow))
+      return { text: text.replace(CLASS_RELATION, ' '), ids: [], unsupported }
+    }
+    case 'er': {
+      const relation = [...text.matchAll(ER_RELATION)].find(([, left, right]) => !ER_ENDS.has(sorted(left!)) || !ER_ENDS.has(sorted(right!)))
+      return { text: text.replace(ER_RELATION, ' -- '), ids: [], unsupported: relation?.[0] }
+    }
+    case 'state': {
+      // `S1 : The first state` shows the description in place of S1.
+      const described = /^([\p{L}\p{N}_]+)\s*:/u.exec(text)
+      return { text, ids: [...aliasIds(type, text), ...(described ? [described[1]!] : [])] }
     }
     default:
-      return text
+      return { text, ids: [] }
   }
 }
 
-// Adds the ids on this line that the drawing shows by a label instead.
-function labelledIds(type: DiagramType, line: string, ids: Set<string>): void {
-  if (type === 'flowchart') flowchartIds(line, ids)
-  if (type === 'sequence' || type === 'state') {
-    // `participant A as Alice`: A is an id. `state "Long" as S1`: S1 is.
-    const alias = /^(?:participant|actor|state)\s+("[^"]*"|[\p{L}\p{N}_]+)\s+as\s+("[^"]*"|[\p{L}\p{N}_]+)/u.exec(line)
-    if (alias) ids.add((type === 'state' ? alias[2]! : alias[1]!).replace(/"/g, ''))
-  }
-  if (type === 'state') {
-    // `S1 : The first state` shows the description in place of S1.
-    const described = /^([\p{L}\p{N}_]+)\s*:/u.exec(line)
-    if (described) ids.add(described[1]!)
-  }
+const sorted = (chars: string): string => [...chars].sort().join('')
+
+// `participant A as Alice`: A is an id. `state "Long" as S1`: S1 is.
+function aliasIds(type: DiagramType, line: string): string[] {
+  const alias = /^(?:participant|actor|state)\s+("[^"]*"|[\p{L}\p{N}_]+)\s+as\s+("[^"]*"|[\p{L}\p{N}_]+)/u.exec(line)
+  return alias ? [(type === 'state' ? alias[2]! : alias[1]!).replace(/"/g, '')] : []
 }
 
 // In a flowchart, a node id is a word outside any label that a shape opens
-// right after: `A[Label]`, `A(Label)`, `A{Label}`, `A>Label]`, and the id of
-// `subgraph S [Title]`. Words in brackets, quotes or `|edge labels|` are
-// text to check, never ids.
-function flowchartIds(line: string, ids: Set<string>): void {
-  const subgraph = /^subgraph\s+([\p{L}\p{N}_]+)\s*\[/u.exec(line)
-  if (subgraph) ids.add(subgraph[1]!)
+// right after: `A[Label]`, `A(Label)`, `A{Label}`, `A>Label]`. Words in
+// brackets, quotes or `|edge labels|` are text to check, never ids, and
+// arrows are looked for only outside them. A subgraph's id is not drawn when
+// it has a title: `subgraph web-app [Web]`.
+function flowchartLine(line: string): Line {
+  const text = line.replace(/^(subgraph\s+)\S+?\s*(?=\[)/, '$1')
+  const ids: string[] = []
+  let outside = ''
   let depth = 0
   let quoted = false
   let edgeLabel = false
   let word = ''
-  for (const char of line) {
+  for (const char of text) {
+    const before = quoted || edgeLabel || depth > 0
     if (quoted) {
       quoted = char !== '"'
     } else if (char === '"') {
@@ -228,14 +258,37 @@ function flowchartIds(line: string, ids: Set<string>): void {
     } else if (edgeLabel) {
       // inside |edge label|
     } else if ('[({'.includes(char) || (char === '>' && depth === 0 && word !== '')) {
-      if (depth === 0 && word !== '') ids.add(word)
+      if (depth === 0 && word !== '') ids.push(word)
       depth++
     } else if (')]}'.includes(char)) {
       depth = Math.max(0, depth - 1)
     } else if (depth === 0 && /[\p{L}\p{N}_]/u.test(char)) {
       word += char
+      outside += char
       continue
     }
     word = ''
+    outside += before || quoted || edgeLabel || depth > 0 || char === '|' ? ' '.repeat(char.length) : char
   }
+
+  // Blank out each arrow, or report the first one not drawn as written.
+  let shown = text
+  for (const match of outside.matchAll(EDGE_RUN)) {
+    const arrow = match[0]
+    const start = match.index
+    const end = start + arrow.length
+    const lone = (i: number) => /[ox]/.test(outside[i] ?? '') && !/[\p{L}\p{N}_]/u.test(outside[i + (i < start ? -1 : 1)] ?? ' ')
+    const circleOrCross = (!arrow.startsWith('<') && lone(start - 1)) || (!arrow.endsWith('>') && lone(end))
+    const space = (i: number) => /\s/.test(outside[i] ?? ' ')
+    const drawn =
+      !circleOrCross &&
+      (FLOWCHART_EDGES.has(arrow) || (TEXT_EDGE_OPEN.has(arrow) && space(end)) || (TEXT_EDGE_CLOSE.has(arrow) && space(start - 1)))
+    if (!drawn) {
+      const from = circleOrCross && lone(start - 1) ? start - 1 : start
+      const to = circleOrCross && lone(end) ? end + 1 : end
+      return { text, ids, unsupported: text.slice(from, to) }
+    }
+    shown = shown.slice(0, start) + ' '.repeat(arrow.length) + shown.slice(end)
+  }
+  return { text: shown, ids }
 }

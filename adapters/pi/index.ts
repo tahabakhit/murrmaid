@@ -20,18 +20,23 @@ interface Pi {
 const DEFAULT_INDENT = '  '
 
 export default function murrmaid(pi: Pi): void {
-  const indent = (): number => {
+  // Its width in columns, or undefined when that can't be told for sure
+  // (tabs, wide or zero-width characters).
+  const indent = (): number | undefined => {
     const value = pi.getSettings?.()?.markdown?.codeBlockIndent
-    return [...(typeof value === 'string' ? value : DEFAULT_INDENT)].length
+    const prefix = typeof value === 'string' ? value : DEFAULT_INDENT
+    return /^[\x20-\x7e]*$/.test(prefix) ? prefix.length : undefined
   }
   pi.registerMarkdownTransformer(
     (markdown, { availableWidth }) => {
       if (!/mermaid/i.test(markdown)) return markdown
-      // Without a width there's no telling what fits, so draw nothing.
-      if (!Number.isFinite(availableWidth)) return markdown
+      // Without a width, or an indent of known width, there's no telling what
+      // fits, so draw nothing.
+      const prefix = indent()
+      if (!Number.isFinite(availableWidth) || prefix === undefined) return markdown
       // renderMarkdown keeps each diagram's drawing, so the redraw on every
       // streaming update doesn't lay it out again.
-      return renderMarkdown(markdown, { width: availableWidth - indent() })
+      return renderMarkdown(markdown, { width: availableWidth - prefix })
     },
     { messageTypes: ['assistant'] },
   )

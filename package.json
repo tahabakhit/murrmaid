@@ -10,7 +10,7 @@
     "build": "node scripts/build.ts",
     "check:bundles": "node scripts/build.ts --check",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test \"packages/*/test/*.test.ts\"",
+    "test": "node --test \"packages/*/test/*.test.ts\" \"adapters/pi/test/*.test.ts\"",
     "test:mod": "claude plugin validate adapters/claude-code && claude plugin test adapters/claude-code"
   },
   "devDependencies": {
