@@ -1,0 +1,14 @@
+{
+  "name": "murrmaid",
+  "owner": { "name": "Taha Bakhit" },
+  "description": "murrmaid: Mermaid diagrams as Unicode box drawing in the terminal.",
+  "plugins": [
+    {
+      "name": "murrmaid",
+      "source": "./adapters/claude-code",
+      "description": "Draws ```mermaid diagrams in assistant replies as Unicode box drawing in the terminal; leaves any diagram it can't draw well as source.",
+      "version": "0.1.0",
+      "license": "MIT"
+    }
+  ]
+}

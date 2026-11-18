@@ -1,0 +1,147 @@
+import assert from 'node:assert/strict'
+import { describe, test } from 'node:test'
+import { drawDiagram, renderMarkdown, scan } from '@murrmaid/core'
+
+const fence = (body: string, info = 'mermaid') => '```' + info + '\n' + body + '\n```'
+const doc = (body: string) => `# Title\n\nBefore.\n\n${fence(body)}\n\nAfter.\n`
+
+const SUPPORTED = {
+  flowchart: ['graph TD\n  A[Start] --> B{Ready?}\n  B -->|yes| C[Ship]\n  B -->|no| A', ['Start', 'Ready', 'Ship', 'yes', 'no']],
+  state: ['stateDiagram-v2\n  [*] --> Idle\n  Idle --> Busy: start\n  Busy --> [*]', ['Idle', 'Busy', 'start']],
+  sequence: ['sequenceDiagram\n  participant C as Client\n  C->>Server: request\n  Server-->>C: response', ['Client', 'Server', 'request']],
+  class: ['classDiagram\n  Animal <|-- Dog\n  class Dog {\n    +String name\n    +bark()\n  }', ['Animal', 'Dog', 'name', 'bark']],
+  er: ['erDiagram\n  CUSTOMER ||--o{ ORDER : places', ['CUSTOMER', 'ORDER', 'places']],
+  xychart: ['xychart-beta\n  title "Sales"\n  x-axis [jan, feb, mar]\n  bar [3, 7, 2]', ['Sales', 'jan', 'mar']],
+} as const
+
+describe('supported diagram types draw', () => {
+  for (const [type, [source, words]] of Object.entries(SUPPORTED)) {
+    test(type, () => {
+      const result = drawDiagram(source)
+      assert.ok(result.ok, result.ok ? '' : result.reason)
+      assert.equal(result.type, type)
+      for (const word of words) assert.match(result.drawing, new RegExp(word))
+      assert.match(result.drawing, /[─│┌└╭╰◇●]/)
+
+      const out = renderMarkdown(doc(source))
+      assert.ok(!out.includes('```mermaid'))
+      assert.ok(out.startsWith('# Title\n\nBefore.\n\n```text\n'))
+      assert.ok(out.endsWith('\n```\n\nAfter.\n'))
+    })
+  }
+})
+
+describe('fallback leaves the block exactly as it was', () => {
+  const unchanged = (source: string, options = {}) => {
+    const input = doc(source)
+    assert.equal(renderMarkdown(input, options), input)
+    const [diagram] = scan(input, options).diagrams
+    assert.ok(diagram && !diagram.result.ok)
+    return diagram.result.ok ? '' : diagram.result.reason
+  }
+
+  test('unsupported types', () => {
+    assert.match(unchanged('pie title Pets\n  "Dogs" : 3\n  "Cats" : 2'), /unsupported diagram type "pie"/)
+    assert.match(unchanged('gantt\n  title Plan\n  section A\n  Task :a1, 2024-01-01, 3d'), /"gantt"/)
+    assert.match(unchanged('mindmap\n  root\n    a'), /"mindmap"/)
+    assert.match(unchanged('gitGraph\n  commit\n  branch dev'), /"gitGraph"/)
+  })
+
+  test('malformed diagrams', () => {
+    assert.match(unchanged('graph TD\n  A[unclosed --> B'), /leaves out "unclosed"/)
+    assert.match(unchanged('graph LR\n  A-->B'), /leaves out "B"/)
+    assert.match(unchanged('sequenceDiagram\n  Alice-x>>\n  ???'), /nothing drawn|leaves out/)
+    assert.match(unchanged('flowchart LR\n  A --> B\n  subgraph X\n  C'), /leaves out "X"/)
+    assert.match(unchanged('not mermaid at all'), /unsupported/)
+    assert.match(unchanged(''), /empty/)
+  })
+
+  test('content the renderer would drop or misalign', () => {
+    assert.match(unchanged('---\ntitle: T\n---\ngraph LR\n  A --> B'), /front matter/)
+    assert.match(unchanged('graph LR\n  A[你好] --> B[ok]'), /wide/)
+    assert.match(unchanged('graph LR\n  A[🚀 go] --> B[ok]'), /wide/)
+    assert.match(unchanged('stateDiagram-v2\n  [*] --> A\n  note right of A: important'), /leaves out "important"/)
+  })
+
+  test('wider than the available width', () => {
+    const long = 'graph LR\n' + Array.from({ length: 6 }, (_, i) => `  N${i}[Step ${i}] --> N${i + 1}[Step ${i + 1}]`).join('\n')
+    assert.match(unchanged(long, { width: 40 }), /too wide \(\d+ > 40 columns\)/)
+    assert.ok(drawDiagram(long, { width: 400 }).ok)
+  })
+
+  test('an unclosed fence, as while a reply streams', () => {
+    const input = 'Text\n\n```mermaid\ngraph TD\n  A --> B\n'
+    assert.equal(renderMarkdown(input), input)
+    assert.deepEqual(scan(input).diagrams, [])
+  })
+})
+
+describe('other content is untouched', () => {
+  test('markdown with no mermaid', () => {
+    const input = '# Hi\n\n- a\n- b\n\n```ts\nconst x = 1\n```\n\n~~~\nplain\n~~~\n| a | b |\n|---|---|\n'
+    assert.equal(renderMarkdown(input), input)
+  })
+
+  test('a mermaid fence inside another fence is code, not a diagram', () => {
+    const input = '````md\n```mermaid\ngraph TD\n  A --> B\n```\n````\n'
+    assert.equal(renderMarkdown(input), input)
+  })
+
+  test('text around a drawn diagram is kept byte for byte', () => {
+    const before = 'Intro with `code` and **bold**.\r\n\r\n'
+    const after = '\r\nOutro.\r\n```js\nx()\n```\n'
+    const out = renderMarkdown(before + '```mermaid\r\ngraph LR\r\n  A --> B\r\n```' + after)
+    assert.ok(out.startsWith(before + '```text\r\n'))
+    assert.ok(out.endsWith('\r\n```' + after))
+  })
+
+  test('several diagrams: each handled on its own', () => {
+    const input = [fence('graph LR\n  A --> B'), fence('pie\n  "x" : 1'), fence('sequenceDiagram\n  A->>B: hi')].join('\n\n')
+    const { markdown, diagrams } = scan(input)
+    assert.deepEqual(diagrams.map(d => [d.line, d.result.ok]), [[1, true], [6, false], [11, true]])
+    assert.ok(markdown.includes(fence('pie\n  "x" : 1')))
+    assert.equal(markdown.match(/```mermaid/g)?.length, 1)
+  })
+})
+
+describe('options', () => {
+  const source = 'graph LR\n  A[One] --> B[Two]'
+
+  test('ascii draws with ASCII only', () => {
+    const result = drawDiagram(source, { ascii: true })
+    assert.ok(result.ok)
+    assert.match(result.drawing, /^[\x20-\x7e\n]+$/)
+  })
+
+  test('color adds ANSI codes, and width ignores them', () => {
+    const plain = drawDiagram(source)
+    const colored = drawDiagram(source, { color: true })
+    assert.ok(plain.ok && colored.ok)
+    assert.match(colored.drawing, /\x1b\[/)
+    const columns = Math.max(...plain.drawing.split('\n').map(l => l.length))
+    assert.ok(drawDiagram(source, { color: true, width: columns }).ok)
+  })
+
+  test('an indented fence keeps its indent, and the indent counts against width', () => {
+    const input = '1. Step\n\n   ```mermaid\n   graph LR\n     A --> B\n   ```\n'
+    const out = renderMarkdown(input)
+    assert.ok(out.includes('\n   ```text\n   ┌'))
+    const columns = Math.max(...(drawDiagram('graph LR\n  A --> B') as { drawing: string }).drawing.split('\n').map(l => l.length))
+    assert.equal(renderMarkdown(input, { width: columns + 2 }), input)
+    assert.notEqual(renderMarkdown(input, { width: columns + 3 }), input)
+  })
+
+  test('a drawing with backticks gets a longer fence', () => {
+    const out = renderMarkdown(fence('graph LR\n  A["see ```"] --> B'))
+    assert.match(out, /^````text\n[\s\S]*\n````$/)
+  })
+})
+
+test('never throws, whatever the input', () => {
+  const samples = ['```mermaid', '```mermaid\n```', '```mermaid\n\0\n```', '```mermaid\n' + '{'.repeat(5000) + '\n```', '\r\r\n```mermaid\r```']
+  for (let i = 0; i < 200; i++) {
+    const chars = 'graph TD-->[]{}()|:;"\n `~%flowchart sequenceDiagram A B'
+    samples.push('```mermaid\n' + Array.from({ length: 60 }, () => chars[Math.floor(Math.random() * chars.length)]).join('') + '\n```')
+  }
+  for (const sample of samples) assert.doesNotThrow(() => renderMarkdown(sample, { width: 80 }))
+})

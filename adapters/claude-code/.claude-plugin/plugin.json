@@ -1,0 +1,10 @@
+{
+  "name": "murrmaid",
+  "version": "0.1.0",
+  "description": "Draws ```mermaid diagrams in assistant replies as Unicode box drawing in the terminal; leaves any diagram it can't draw well as source.",
+  "author": { "name": "Taha Bakhit" },
+  "homepage": "https://github.com/tahabakhit/murrmaid",
+  "repository": "https://github.com/tahabakhit/murrmaid",
+  "license": "MIT",
+  "keywords": ["mermaid", "diagram", "terminal", "mod"]
+}

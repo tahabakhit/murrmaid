@@ -1,0 +1,30 @@
+{
+  "name": "murrmaid-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/cli"
+  ],
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "check:bundles": "node scripts/build.ts --check",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test \"packages/*/test/*.test.ts\"",
+    "test:mod": "claude plugin validate adapters/claude-code && claude plugin test adapters/claude-code"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "pi": {
+    "extensions": [
+      "./adapters/pi/index.ts"
+    ],
+    "skills": []
+  }
+}

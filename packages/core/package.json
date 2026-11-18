@@ -1,0 +1,14 @@
+{
+  "name": "@murrmaid/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Replace ```mermaid fences in markdown with Unicode box drawings, or leave them unchanged.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "beautiful-mermaid": "1.1.3"
+  }
+}
