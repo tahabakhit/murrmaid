@@ -168,13 +168,14 @@ byte. A diagram stays as source when:
 - it uses an arrow beautiful-mermaid drops or draws as a plain one, such as
   flowchart `--o`, `--x` and `~~~`, sequence `-x`, or ER `}o`, or class
   multiplicities, which it doesn't draw;
-- the renderer's parse of a flowchart or state diagram has fewer edges than
-  the source has arrows, or it would draw them wrongly: right to left,
+- the renderer's parse of a flowchart or state diagram has a different
+  number of edges than the source has arrows, or it would draw them wrongly: right to left,
   edges into a subgraph, shared edges without single arrowheads in a
   top-down layout, several statements on one line;
 - it has `:::name` style shorthand, a state note, a class or entity
-  related to itself, two relations between one pair, or a flowchart header
-  without a direction or ending in `;`;
+  related to itself, two relations between one pair, quoted names in a
+  relation, line breaks in a bottom-up flowchart or a message to oneself,
+  or a flowchart header without a direction or ending in `;`;
 - it has front matter (`---`), which would carry a title;
 - it contains wide or zero-width characters (CJK, emoji, combining marks,
   anything beyond U+FFFF) or control characters such as tabs, which the

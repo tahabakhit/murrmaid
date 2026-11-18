@@ -60,6 +60,9 @@ describe('mermaid syntax the renderer draws, though not word for word', () => {
     'a labelled edge beside an undirected one': 'graph TD\n  A --- B\n  A -->|no| C',
     'an ER attribute called direction': 'erDiagram\n  CUSTOMER {\n    direction RL\n  }\n  CUSTOMER ||--o{ ORDER : places',
     'grouped edges': 'flowchart LR\n  A & B --> C --> D',
+    'separate fan-out styles': 'graph TD\n  A --- B\n  A --- C\n  A -.-> D',
+    'a comparison in a text-edge label': 'flowchart LR\n  A -- CPU>50% --> B',
+    'triple colons in a label': 'flowchart LR\n  A[Cache:::v2] --> B[Store]',
     'every edge it draws': 'flowchart LR\n  A --> B --- C -.-> D -.- E ==> F === G\n  H <--> I <-.-> J <==> K ---> L <---> M\n  N -- one --> O -. two .-> P == three ==> Q\n  R -- "four" --> S',
   }
   for (const [name, source] of Object.entries(cases)) {
@@ -158,6 +161,12 @@ describe('fallback leaves the block exactly as it was', () => {
     assert.match(unchanged('erDiagram\n  A ||--o{ B : has\n  B }|--|| A : in'), /one pair/)
     assert.match(unchanged('erDiagram\n  EMPLOYEE |o--o| EMPLOYEE : manages'), /itself/)
     assert.match(unchanged('flowchart LR\n  A -- "x<br/> --> y" --> B\n  B --> C'), /unsupported arrow/)
+    assert.match(unchanged('flowchart LR\n  A -- parse<br/>error --x B --> C'), /unsupported arrow/)
+    assert.match(unchanged('flowchart LR\n  A["Example:<br/>A] --> B"]'), /adds 1 edges/)
+    assert.match(unchanged('flowchart LR\n  C --> web-app\n  subgraph web-app\n    X --> Y\n  end'), /edge into subgraph "web-app"/)
+    assert.match(unchanged('erDiagram\n  "EMPLOYEE" |o--o| EMPLOYEE : mentor'), /quoted names/)
+    assert.match(unchanged('graph BT\n  A[First<br/>Second] --> B'), /bottom-up/)
+    assert.match(unchanged('sequenceDiagram\n  Client->>Client: Clean<br/>up'), /oneself/)
   })
 
   // Each of these takes beautiful-mermaid about 25 seconds to give up on.

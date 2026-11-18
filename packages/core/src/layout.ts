@@ -57,10 +57,11 @@ export function layoutProblem(graph: Graph): string | undefined {
 const blocked = (target: string) => `edges into "${target}" can't be routed`
 
 /** What the renderer would draw wrongly in this flowchart or state diagram. */
-export function drawingProblem(graph: Graph): string | undefined {
+export function drawingProblem(graph: Graph, sourceSubgraphs: string[] = []): string | undefined {
   // An edge into a subgraph is drawn to a stray node of the same name, or
-  // dropped in a state diagram.
-  const subgraphs = new Set<string>()
+  // dropped in a state diagram. The parser rewrites some ids (`web-app` to
+  // `webapp`), so the ids as written count too.
+  const subgraphs = new Set<string>(sourceSubgraphs)
   const visit = (list: Graph['subgraphs']) => list.forEach(subgraph => (subgraphs.add(subgraph.id), visit(subgraph.children)))
   visit(graph.subgraphs)
   const edge = graph.edges.find(edge => subgraphs.has(edge.source) || subgraphs.has(edge.target))
@@ -73,21 +74,18 @@ export function drawingProblem(graph: Graph): string | undefined {
   return undefined
 }
 
-// Groups of edges the renderer may bundle, as layoutProblem reads them: two
-// or more unlabelled edges of one style into one target, or out of a source
-// whose edges are all unlabelled.
+// Groups of edges the renderer bundles (src/ascii/edge-bundling.ts): two or
+// more unlabelled edges of one style into one target; then, of the edges
+// left, two or more out of one source, all unlabelled and of one style.
 function bundles(graph: Graph): Edge[][] {
   const found: Edge[][] = []
-  const unlabelled = (edges: Edge[]) => edges.every(edge => !edge.label)
-  for (const edges of group(graph, edge => edge.target).values()) {
-    if (edges.length >= 2 && unlabelled(edges) && edges.every(edge => edge.style === edges[0]!.style)) found.push(edges)
-  }
+  const bundleable = (edges: Edge[]) =>
+    edges.length >= 2 && edges.every(edge => !edge.label && edge.style === edges[0]!.style)
+  for (const edges of group(graph, edge => edge.target).values()) if (bundleable(edges)) found.push(edges)
+  const taken = new Set(found.flat())
   for (const edges of group(graph, edge => edge.source).values()) {
-    if (!unlabelled(edges)) continue
-    for (const style of new Set(edges.map(edge => edge.style))) {
-      const same = edges.filter(edge => edge.style === style)
-      if (same.length >= 2) found.push(same)
-    }
+    const left = edges.filter(edge => !taken.has(edge))
+    if (bundleable(left)) found.push(left)
   }
   return found
 }

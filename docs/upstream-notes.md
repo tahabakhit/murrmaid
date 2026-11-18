@@ -89,7 +89,16 @@ Each is a candidate upstream issue. None has been filed yet.
 28. Two class or ER relations between one pair are drawn on one path, the
     later over the earlier.
 29. A text-edge label ends at the first closing arrow even inside quotes:
-    `A -- "x --> y" --> B` links A to a node `y`.
+    `A -- "x --> y" --> B` links A to a node `y`; and it runs past `--x`,
+    so `A -- label --x B --> C` links A to C.
+30. A quoted node label ends at its first `]`: `A["x] --> B"]` draws an
+    edge to B.
+31. `"A"` and `A` are two names to the class and ER renderers.
+32. Subgraph ids are rewritten (`web-app` to `webapp`), so an edge to
+    `web-app` draws a stray node.
+33. A bottom-up flowchart reverses the lines of a multi-line label, and a
+    sequence message to oneself writes a `<br/>` line break into the
+    drawing as is.
 
 ## How murrmaid copes
 
@@ -107,4 +116,4 @@ Each is a candidate upstream issue. None has been filed yet.
 | 19, 20 | drawn as is |
 | 21, 22 | falls back on several statements on a line, or when the renderer's parse has fewer edges than the source has arrows |
 | 23 | falls back on multiplicities |
-| 24, 25, 26, 27, 28, 29 | falls back (right to left, edges into subgraphs, shared edges with other arrows, self-relations, repeated pairs, quoted closing arrows) |
+| 24 to 33 | falls back (right to left, edges into subgraphs, shared edges with other arrows, self-relations, repeated pairs, arrows inside text-edge labels, more edges than arrows, quoted relation names, line breaks bottom-up or to oneself) |

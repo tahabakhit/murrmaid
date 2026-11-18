@@ -71,6 +71,7 @@ const TEXT_EDGE_OPEN = new Set(['--', '-.', '==', '<--', '<-.', '<=='])
 // The end of `A -- label --> B`: as src/parser.ts reads it, the first of
 // these after the label's first character.
 const TEXT_EDGE_CLOSE = /\s(-->|---|\.->|-\.-|==>|===)/g
+const INNER_ARROW = /\s<?[-=.~]{2,}>?(?:[ox](?![\p{L}\p{N}_])|\s|$)/u
 // beautiful-mermaid's own message pattern (src/sequence/parser.ts).
 const SEQUENCE_MESSAGE = /^(\S+?)\s*(--?>?>|--?[)x]|--?>>|--?>)\s*([+-]?)(\S+?)\s*:\s*(.+)$/
 // beautiful-mermaid's own relation patterns (src/class/parser.ts and
@@ -116,8 +117,14 @@ export function drawDiagram(source: string, options: Options = {}): Result {
   const rightToLeft = /\bRL\s*;?$/i.test(header) || body.some(line => /^\s*direction\s+RL\s*;?\s*$/i.test(line))
   if ((type === 'flowchart' || type === 'state') && rightToLeft) return fail('right to left is drawn left to right')
   // `A:::name` styles a node; the renderer mishandles it in several places.
-  if ((type === 'flowchart' || type === 'state') && body.some(line => line.replace(/"[^"]*"/g, '').includes(':::'))) {
+  // (Flowcharts are checked outside labels, in flowchartLine.)
+  if (type === 'state' && body.some(line => line.replace(/"[^"]*"/g, '').includes(':::'))) {
     return fail('style shorthand (:::) is not supported')
+  }
+  // The renderer flips a bottom-up canvas line by line, so a label's lines
+  // come out in reverse.
+  if (type === 'flowchart' && /\bBT\b/i.test(header) && body.some(line => /<br/i.test(line))) {
+    return fail('line breaks in a bottom-up flowchart')
   }
   // Lines inside `Class {` or `ENTITY {` blocks are members, not relations.
   let block = false
@@ -142,9 +149,11 @@ export function drawDiagram(source: string, options: Options = {}): Result {
       const graph = parseGraph(text)
       const arrows = content.reduce((sum, line) => sum + line.edges, 0)
       if (graph.edges.length < arrows) return fail(`drawing leaves out ${arrows - graph.edges.length} of ${arrows} edges`)
+      if (graph.edges.length > arrows) return fail(`drawing adds ${graph.edges.length - arrows} edges`)
       const layout = layoutProblem(graph)
       if (layout !== undefined) return fail(`layout would not finish: ${layout}`)
-      const wrong = drawingProblem(graph)
+      const subgraphIds = body.flatMap(line => /^\s*subgraph\s+([^\s[]+)/.exec(line)?.[1] ?? [])
+      const wrong = drawingProblem(graph, subgraphIds)
       if (wrong !== undefined) return fail(`would be drawn wrongly: ${wrong}`)
     }
     drawing = renderMermaidASCII(text, { useAscii: options.ascii === true, colorMode: options.color ? 'ansi16' : 'none' })
@@ -241,6 +250,8 @@ function readLine(type: DiagramType, line: string, inBlock: boolean): Line {
       const [, from, operator, , to, label] = message as unknown as string[]
       // `-x` is drawn as a plain arrow, and `A<<->>B` as an actor named "A<<".
       if (operator!.includes('x') || from!.endsWith('<') || to!.startsWith('>')) return { ...plain, problem: arrow(`${from}${operator}${to}`) }
+      // A message to oneself writes a line break into the drawing as is.
+      if (from === to && /<br/i.test(line)) return { ...plain, problem: 'a line break in a message to oneself' }
       return { ...plain, text: `${from} ${to}: ${label}` }
     }
     case 'class': {
@@ -249,6 +260,7 @@ function readLine(type: DiagramType, line: string, inBlock: boolean): Line {
       if (relation === null) return { ...plain, problem: arrow(head.trim()) }
       const [, from, fromCount, , toCount, to, label = ''] = relation
       if (fromCount !== undefined || toCount !== undefined) return { ...plain, problem: 'multiplicities are not drawn' }
+      if (quotedName(from!, to!)) return { ...plain, problem: 'quoted names in a relation' }
       if (from === to) return { ...plain, problem: 'a class related to itself is not drawn as a loop' }
       return { ...plain, text: [from, to, label].join(' '), pair: pairOf(from!, to!) }
     }
@@ -259,6 +271,7 @@ function readLine(type: DiagramType, line: string, inBlock: boolean): Line {
         return { ...plain, problem: arrow(head.trim()) }
       }
       const [, from, , , , to, label] = relation
+      if (quotedName(from!, to!)) return { ...plain, problem: 'quoted names in a relation' }
       if (from === to) return { ...plain, problem: 'an entity related to itself is not drawn as a loop' }
       return { ...plain, text: [from, to, label].join(' '), pair: pairOf(from!, to!) }
     }
@@ -275,6 +288,8 @@ function readLine(type: DiagramType, line: string, inBlock: boolean): Line {
 }
 
 const sorted = (chars: string): string => [...chars].sort().join('')
+// Mermaid reads `"A"` and A as one name, the renderer as two.
+const quotedName = (...names: string[]) => names.some(name => /^["`]/.test(name))
 
 // `participant A as Alice`: A is an id. `state "Long" as S1`: S1 is.
 function aliasIds(type: DiagramType, line: string): string[] {
@@ -295,7 +310,9 @@ function flowchartLine(line: string): Line {
   let quoted = false
   let edgeLabel = false
   let word = ''
+  let index = 0
   for (const char of text) {
+    index += char.length
     const before = quoted || edgeLabel || depth > 0
     if (quoted) {
       quoted = char !== '"'
@@ -306,7 +323,8 @@ function flowchartLine(line: string): Line {
       edgeLabel = !edgeLabel
     } else if (edgeLabel) {
       // inside |edge label|
-    } else if ('[({'.includes(char) || (char === '>' && depth === 0 && word !== '')) {
+    } else if ('[({'.includes(char) || (char === '>' && depth === 0 && word !== '' && text.includes(']', index))) {
+      // `A>Label]` opens a shape only where a `]` closes it; `CPU>50%` is text.
       if (depth === 0 && word !== '') ids.push(word)
       depth++
     } else if (')]}'.includes(char)) {
@@ -326,6 +344,7 @@ function flowchartLine(line: string): Line {
     outside = outside.slice(0, start) + ' '.repeat(end - start) + outside.slice(end)
   }
   if (/;\s*\S/.test(outside)) return { text, ids, edges: 0, problem: 'several statements on one line' }
+  if (outside.includes(':::')) return { text, ids, edges: 0, problem: 'style shorthand (:::) is not supported' }
   // A subgraph's title, bracketed or not, is text.
   if (/^subgraph(\s|$)/.test(text)) return { text: shown, ids, edges: 0 }
 
@@ -352,6 +371,9 @@ function flowchartLine(line: string): Line {
       TEXT_EDGE_CLOSE.lastIndex = end + label + 1
       const close = label === -1 ? null : TEXT_EDGE_CLOSE.exec(text)
       if (close === null || outside.slice(close.index + 1, close.index + close[0].length) !== close[1]) return fail(start, end)
+      // An arrow inside the label, such as `-- label --x B --> C`, ends the
+      // edge for Mermaid but not for the renderer.
+      if (INNER_ARROW.test(outside.slice(end, close.index + 1))) return fail(start, end)
       last = close[1]!
       const closeStart = close.index + 1
       blank(start, end)

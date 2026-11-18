@@ -5581,8 +5581,8 @@ function layoutProblem(graph) {
   return void 0;
 }
 var blocked = (target) => `edges into "${target}" can't be routed`;
-function drawingProblem(graph) {
-  const subgraphs = /* @__PURE__ */ new Set();
+function drawingProblem(graph, sourceSubgraphs = []) {
+  const subgraphs = new Set(sourceSubgraphs);
   const visit = (list) => list.forEach((subgraph) => (subgraphs.add(subgraph.id), visit(subgraph.children)));
   visit(graph.subgraphs);
   const edge = graph.edges.find((edge2) => subgraphs.has(edge2.source) || subgraphs.has(edge2.target));
@@ -5594,16 +5594,12 @@ function drawingProblem(graph) {
 }
 function bundles(graph) {
   const found = [];
-  const unlabelled = (edges) => edges.every((edge) => !edge.label);
-  for (const edges of group(graph, (edge) => edge.target).values()) {
-    if (edges.length >= 2 && unlabelled(edges) && edges.every((edge) => edge.style === edges[0].style)) found.push(edges);
-  }
+  const bundleable = (edges) => edges.length >= 2 && edges.every((edge) => !edge.label && edge.style === edges[0].style);
+  for (const edges of group(graph, (edge) => edge.target).values()) if (bundleable(edges)) found.push(edges);
+  const taken = new Set(found.flat());
   for (const edges of group(graph, (edge) => edge.source).values()) {
-    if (!unlabelled(edges)) continue;
-    for (const style of new Set(edges.map((edge) => edge.style))) {
-      const same = edges.filter((edge) => edge.style === style);
-      if (same.length >= 2) found.push(same);
-    }
+    const left = edges.filter((edge) => !taken.has(edge));
+    if (bundleable(left)) found.push(left);
   }
   return found;
 }
@@ -5688,6 +5684,7 @@ var EDGE_RUN = /<?[-=.~]{2,}>?/g;
 var FLOWCHART_EDGES = /* @__PURE__ */ new Set(["-->", "--->", "<-->", "<--->", "---", "-.->", "<-.->", "-.-", "==>", "<==>", "==="]);
 var TEXT_EDGE_OPEN = /* @__PURE__ */ new Set(["--", "-.", "==", "<--", "<-.", "<=="]);
 var TEXT_EDGE_CLOSE = /\s(-->|---|\.->|-\.-|==>|===)/g;
+var INNER_ARROW = /\s<?[-=.~]{2,}>?(?:[ox](?![\p{L}\p{N}_])|\s|$)/u;
 var SEQUENCE_MESSAGE = /^(\S+?)\s*(--?>?>|--?[)x]|--?>>|--?>)\s*([+-]?)(\S+?)\s*:\s*(.+)$/;
 var CLASS_RELATION = /^(\S+?)\s+(?:"([^"]*?)"\s+)?(<\|--|<\|\.\.|\*--|o--|-->|--\*|--o|--\|>|\.\.>|\.\.\|>|<--|<\.\.)\s+(?:"([^"]*?)"\s+)?(\S+?)(?:\s*:\s*(.+))?$/;
 var ER_RELATION = /^(\S+)\s+([|o}{]+)(--|\.\.)([|o}{]+)\s+(\S+)\s*:\s*(.+)$/;
@@ -5716,8 +5713,11 @@ function drawDiagram(source, options = {}) {
   if (type === "flowchart" && topLevelDirection(body)) return fail("direction outside a subgraph");
   const rightToLeft = /\bRL\s*;?$/i.test(header) || body.some((line) => /^\s*direction\s+RL\s*;?\s*$/i.test(line));
   if ((type === "flowchart" || type === "state") && rightToLeft) return fail("right to left is drawn left to right");
-  if ((type === "flowchart" || type === "state") && body.some((line) => line.replace(/"[^"]*"/g, "").includes(":::"))) {
+  if (type === "state" && body.some((line) => line.replace(/"[^"]*"/g, "").includes(":::"))) {
     return fail("style shorthand (:::) is not supported");
+  }
+  if (type === "flowchart" && /\bBT\b/i.test(header) && body.some((line) => /<br/i.test(line))) {
+    return fail("line breaks in a bottom-up flowchart");
   }
   let block = false;
   const content = contentLines(type, body).map((line) => {
@@ -5736,9 +5736,11 @@ function drawDiagram(source, options = {}) {
       const graph = parseGraph(text);
       const arrows = content.reduce((sum, line) => sum + line.edges, 0);
       if (graph.edges.length < arrows) return fail(`drawing leaves out ${arrows - graph.edges.length} of ${arrows} edges`);
+      if (graph.edges.length > arrows) return fail(`drawing adds ${graph.edges.length - arrows} edges`);
       const layout = layoutProblem(graph);
       if (layout !== void 0) return fail(`layout would not finish: ${layout}`);
-      const wrong = drawingProblem(graph);
+      const subgraphIds = body.flatMap((line) => /^\s*subgraph\s+([^\s[]+)/.exec(line)?.[1] ?? []);
+      const wrong = drawingProblem(graph, subgraphIds);
       if (wrong !== void 0) return fail(`would be drawn wrongly: ${wrong}`);
     }
     drawing = renderMermaidASCII(text, { useAscii: options.ascii === true, colorMode: options.color ? "ansi16" : "none" });
@@ -5801,6 +5803,7 @@ function readLine(type, line, inBlock) {
       if (message === null) return { ...plain, ids: aliasIds(type, text) };
       const [, from, operator, , to, label] = message;
       if (operator.includes("x") || from.endsWith("<") || to.startsWith(">")) return { ...plain, problem: arrow(`${from}${operator}${to}`) };
+      if (from === to && /<br/i.test(line)) return { ...plain, problem: "a line break in a message to oneself" };
       return { ...plain, text: `${from} ${to}: ${label}` };
     }
     case "class": {
@@ -5809,6 +5812,7 @@ function readLine(type, line, inBlock) {
       if (relation === null) return { ...plain, problem: arrow(head.trim()) };
       const [, from, fromCount, , toCount, to, label = ""] = relation;
       if (fromCount !== void 0 || toCount !== void 0) return { ...plain, problem: "multiplicities are not drawn" };
+      if (quotedName(from, to)) return { ...plain, problem: "quoted names in a relation" };
       if (from === to) return { ...plain, problem: "a class related to itself is not drawn as a loop" };
       return { ...plain, text: [from, to, label].join(" "), pair: pairOf(from, to) };
     }
@@ -5819,6 +5823,7 @@ function readLine(type, line, inBlock) {
         return { ...plain, problem: arrow(head.trim()) };
       }
       const [, from, , , , to, label] = relation;
+      if (quotedName(from, to)) return { ...plain, problem: "quoted names in a relation" };
       if (from === to) return { ...plain, problem: "an entity related to itself is not drawn as a loop" };
       return { ...plain, text: [from, to, label].join(" "), pair: pairOf(from, to) };
     }
@@ -5833,6 +5838,7 @@ function readLine(type, line, inBlock) {
   }
 }
 var sorted = (chars) => [...chars].sort().join("");
+var quotedName = (...names) => names.some((name) => /^["`]/.test(name));
 function aliasIds(type, line) {
   const alias = /^(?:participant|actor|state)\s+("[^"]*"|[\p{L}\p{N}_]+)\s+as\s+("[^"]*"|[\p{L}\p{N}_]+)/u.exec(line);
   return alias ? [(type === "state" ? alias[2] : alias[1]).replace(/"/g, "")] : [];
@@ -5845,7 +5851,9 @@ function flowchartLine(line) {
   let quoted = false;
   let edgeLabel = false;
   let word = "";
+  let index = 0;
   for (const char of text) {
+    index += char.length;
     const before = quoted || edgeLabel || depth > 0;
     if (quoted) {
       quoted = char !== '"';
@@ -5854,7 +5862,7 @@ function flowchartLine(line) {
     } else if (depth === 0 && char === "|" && (edgeLabel || /[-=.>]\s*$/.test(outside))) {
       edgeLabel = !edgeLabel;
     } else if (edgeLabel) {
-    } else if ("[({".includes(char) || char === ">" && depth === 0 && word !== "") {
+    } else if ("[({".includes(char) || char === ">" && depth === 0 && word !== "" && text.includes("]", index)) {
       if (depth === 0 && word !== "") ids.push(word);
       depth++;
     } else if (")]}".includes(char)) {
@@ -5873,6 +5881,7 @@ function flowchartLine(line) {
     outside = outside.slice(0, start) + " ".repeat(end - start) + outside.slice(end);
   };
   if (/;\s*\S/.test(outside)) return { text, ids, edges: 0, problem: "several statements on one line" };
+  if (outside.includes(":::")) return { text, ids, edges: 0, problem: "style shorthand (:::) is not supported" };
   if (/^subgraph(\s|$)/.test(text)) return { text: shown, ids, edges: 0 };
   const marker = (i) => /[ox]/.test(outside[i] ?? "");
   const space = (i) => /\s/.test(outside[i] ?? " ");
@@ -5891,6 +5900,7 @@ function flowchartLine(line) {
       TEXT_EDGE_CLOSE.lastIndex = end + label + 1;
       const close = label === -1 ? null : TEXT_EDGE_CLOSE.exec(text);
       if (close === null || outside.slice(close.index + 1, close.index + close[0].length) !== close[1]) return fail(start, end);
+      if (INNER_ARROW.test(outside.slice(end, close.index + 1))) return fail(start, end);
       last = close[1];
       const closeStart = close.index + 1;
       blank(start, end);
