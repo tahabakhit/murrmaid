@@ -21,12 +21,14 @@ import { parseMermaid } from 'beautiful-mermaid'
 /** More nodes than this could reach level 25 (problem 2 above). */
 export const MAX_GRAPH_NODES = 24
 
-type Graph = ReturnType<typeof parseMermaid>
+export type Graph = ReturnType<typeof parseMermaid>
 type Edge = Graph['edges'][number]
 
+/** The renderer's own reading of a flowchart or state diagram. */
+export const parseGraph = (source: string): Graph => parseMermaid(source)
+
 /** Why the renderer would hang on this flowchart or state diagram, if it would. */
-export function layoutProblem(source: string): string | undefined {
-  const graph = parseMermaid(source)
+export function layoutProblem(graph: Graph): string | undefined {
   if (graph.nodes.size > MAX_GRAPH_NODES) return `more than ${MAX_GRAPH_NODES} nodes`
   // Edges are bundled only in top-down layouts; bottom-up is laid out top-down.
   if (graph.direction === 'LR' || graph.direction === 'RL') return undefined

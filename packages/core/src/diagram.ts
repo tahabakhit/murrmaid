@@ -3,7 +3,7 @@
 // fails returns a reason instead of a drawing; nothing here throws.
 
 import { renderMermaidASCII } from 'beautiful-mermaid'
-import { layoutProblem } from './layout.ts'
+import { layoutProblem, parseGraph } from './layout.ts'
 
 export interface Options {
   /** Widest drawing allowed, in terminal columns. Wider ones fall back. */
@@ -69,8 +69,9 @@ const STYLE_SHORTHAND = /:::[\p{L}\p{N}_]+(?:-[\p{L}\p{N}_]+)*/gu
 const EDGE_RUN = /<?[-=.~]{2,}>?/g
 const FLOWCHART_EDGES = new Set(['-->', '--->', '<-->', '<--->', '---', '-.->', '<-.->', '-.-', '==>', '<==>', '==='])
 const TEXT_EDGE_OPEN = new Set(['--', '-.', '==', '<--', '<-.', '<=='])
-// `A -- label --> B`, as src/parser.ts reads it: the shortest label.
-const TEXT_EDGE_REST = /^\s+(.+?)\s+(-->|---|\.->|-\.-|==>|===)/
+// The end of `A -- label --> B`: as src/parser.ts reads it, the first of
+// these after the label's first character.
+const TEXT_EDGE_CLOSE = /\s(-->|---|\.->|-\.-|==>|===)/g
 // beautiful-mermaid's own message pattern (src/sequence/parser.ts).
 const SEQUENCE_MESSAGE = /^(\S+?)\s*(--?>?>|--?[)x]|--?>>|--?>)\s*([+-]?)(\S+?)\s*:\s*(.+)$/
 // beautiful-mermaid's own relation patterns (src/class/parser.ts and
@@ -113,14 +114,28 @@ export function drawDiagram(source: string, options: Options = {}): Result {
   const text = [type === 'flowchart' ? flowchartHeader(header) : header, ...body].join('\n')
   if (body.some(line => NOT_ONE_COLUMN.test(line))) return fail('wide, zero-width or control characters')
   if (type === 'flowchart' && topLevelDirection(body)) return fail('direction outside a subgraph')
-  const content = contentLines(type, body).map(line => readLine(type, line))
-  const unsupported = content.find(line => line.unsupported !== undefined)?.unsupported
-  if (unsupported !== undefined) return fail(`unsupported arrow "${unsupported}"`)
+  // Lines inside `Class {` or `ENTITY {` blocks are members, not relations.
+  let block = false
+  const content = contentLines(type, body).map(line => {
+    const read = readLine(type, line, block)
+    if (line.endsWith('{')) block = true
+    else if (line === '}') block = false
+    return read
+  })
+  const problem = content.find(line => line.problem !== undefined)?.problem
+  if (problem !== undefined) return fail(problem)
 
   let drawing: string
   try {
-    const problem = type === 'flowchart' || type === 'state' ? layoutProblem(text) : undefined
-    if (problem !== undefined) return fail(`layout would not finish: ${problem}`)
+    if (type === 'flowchart' || type === 'state') {
+      // Every arrow in the source must be an edge in the renderer's reading,
+      // which silently drops what it can't parse (`A --> B; B --> C`).
+      const graph = parseGraph(text)
+      const arrows = content.reduce((sum, line) => sum + line.edges, 0)
+      if (graph.edges.length < arrows) return fail(`drawing leaves out ${arrows - graph.edges.length} of ${arrows} edges`)
+      const layout = layoutProblem(graph)
+      if (layout !== undefined) return fail(`layout would not finish: ${layout}`)
+    }
     drawing = renderMermaidASCII(text, { useAscii: options.ascii === true, colorMode: options.color ? 'ansi16' : 'none' })
   } catch (error) {
     return fail(`parse error: ${error instanceof Error ? error.message : String(error)}`)
@@ -148,14 +163,19 @@ function flowchartHeader(header: string): string {
 function stateStyles(line: string): string {
   const style = new RegExp('^' + STYLE_SHORTHAND.source, 'u')
   let shown = ''
-  let from = 0
-  for (;;) {
-    const colon = line.indexOf(':', from)
-    const match = colon === -1 ? null : style.exec(line.slice(colon))
-    if (match === null) return shown + line.slice(from)
-    shown += line.slice(from, colon)
-    from = colon + match[0].length
+  let quoted = false
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i]!
+    if (char === '"') quoted = !quoted
+    if (char === ':' && !quoted) {
+      const match = style.exec(line.slice(i))
+      if (match === null) return shown + line.slice(i)
+      i += match[0].length - 1
+      continue
+    }
+    shown += char
   }
+  return shown
 }
 
 // A flowchart's `direction` belongs in a subgraph. At the top level
@@ -194,9 +214,13 @@ interface Line {
   text: string
   /** Ids the drawing shows by a label of their own instead. */
   ids: string[]
-  /** An arrow the renderer would not draw as written. */
-  unsupported?: string
+  /** Arrows on the line, each an edge in flowcharts and state diagrams. */
+  edges: number
+  /** Why the line would not be drawn as written, if it wouldn't. */
+  problem?: string
 }
+
+const arrow = (text: string) => `unsupported arrow "${text}"`
 
 // beautiful-mermaid does not reject much malformed input: it draws what it
 // understood and drops the rest. So check that every word the source would
@@ -216,41 +240,45 @@ function missingWords(type: DiagramType, lines: Line[], drawing: string): string
   return [...missing]
 }
 
-function readLine(type: DiagramType, line: string): Line {
+function readLine(type: DiagramType, line: string, inBlock: boolean): Line {
   const text = line.replace(LINE_BREAK, ' ')
+  const head = text.split(':')[0]!
+  const plain = { text, ids: [], edges: 0 }
   switch (type) {
     case 'flowchart':
-      return flowchartLine(text.replace(STYLE_SHORTHAND, ' '))
+      return flowchartLine(text)
     case 'sequence': {
       const message = SEQUENCE_MESSAGE.exec(text)
-      if (message === null) return { text, ids: aliasIds(type, text) }
-      const [, from, arrow, , to, label] = message as unknown as string[]
+      if (message === null) return { ...plain, ids: aliasIds(type, text) }
+      const [, from, operator, , to, label] = message as unknown as string[]
       // `-x` is drawn as a plain arrow, and `A<<->>B` as an actor named "A<<".
-      if (arrow!.includes('x') || from!.endsWith('<') || to!.startsWith('>')) return { text, ids: [], unsupported: `${from}${arrow}${to}` }
-      return { text: `${from} ${to}: ${label}`, ids: [] }
+      if (operator!.includes('x') || from!.endsWith('<') || to!.startsWith('>')) return { ...plain, problem: arrow(`${from}${operator}${to}`) }
+      return { ...plain, text: `${from} ${to}: ${label}` }
     }
     case 'class': {
-      if (!RELATION_LINE.test(text.split(':')[0]!)) return { text, ids: [] }
+      if (inBlock || !RELATION_LINE.test(head)) return plain
       const relation = CLASS_RELATION.exec(text)
-      if (relation === null) return { text, ids: [], unsupported: text.split(':')[0]!.trim() }
-      const [, from, fromCount = '', , toCount = '', to, label = ''] = relation
-      return { text: [from, fromCount, toCount, to, label].join(' '), ids: [] }
+      if (relation === null) return { ...plain, problem: arrow(head.trim()) }
+      const [, from, fromCount, , toCount, to, label = ''] = relation
+      if (fromCount !== undefined || toCount !== undefined) return { ...plain, problem: 'multiplicities are not drawn' }
+      return { ...plain, text: [from, to, label].join(' ') }
     }
     case 'er': {
-      if (!RELATION_LINE.test(text.split(':')[0]!)) return { text, ids: [] }
+      if (inBlock || !RELATION_LINE.test(head)) return plain
       const relation = ER_RELATION.exec(text)
       if (relation === null || !ER_ENDS.has(sorted(relation[2]!)) || !ER_ENDS.has(sorted(relation[4]!))) {
-        return { text, ids: [], unsupported: text.split(':')[0]!.trim() }
+        return { ...plain, problem: arrow(head.trim()) }
       }
-      return { text: [relation[1], relation[5], relation[6]].join(' '), ids: [] }
+      return { ...plain, text: [relation[1], relation[5], relation[6]].join(' ') }
     }
     case 'state': {
       // `S1 : The first state` shows the description in place of S1.
       const described = /^([\p{L}\p{N}_]+)\s*:/u.exec(text)
-      return { text, ids: [...aliasIds(type, text), ...(described ? [described[1]!] : [])] }
+      const edges = head.includes('-->') ? 1 : 0
+      return { ...plain, edges, ids: [...aliasIds(type, text), ...(described ? [described[1]!] : [])] }
     }
     default:
-      return { text, ids: [] }
+      return plain
   }
 }
 
@@ -299,39 +327,48 @@ function flowchartLine(line: string): Line {
     outside += before || quoted || edgeLabel || depth > 0 || char === '|' ? ' '.repeat(char.length) : char
   }
 
-  // Blank out each arrow, or report the first one not drawn as written. A
-  // circle or cross end (`--o`, `x--`, `---xB`) is never drawn.
   let shown = text
   const blank = (start: number, end: number) => {
     shown = shown.slice(0, start) + ' '.repeat(end - start) + shown.slice(end)
+    outside = outside.slice(0, start) + ' '.repeat(end - start) + outside.slice(end)
   }
+  // `A:::name` styles a node; inside a label it is text.
+  for (const match of outside.matchAll(STYLE_SHORTHAND)) blank(match.index, match.index + match[0].length)
+  // A subgraph's title, bracketed or not, is text.
+  if (/^subgraph(\s|$)/.test(text)) return { text: shown, ids, edges: 0 }
+
+  // Blank out each arrow, or report the first one not drawn as written. A
+  // circle or cross end (`--o`, `x--`, `---xB`) is never drawn.
   const marker = (i: number) => /[ox]/.test(outside[i] ?? '')
-  const wordChar = (i: number) => /[\p{L}\p{N}_]/u.test(outside[i] ?? ' ')
   const space = (i: number) => /\s/.test(outside[i] ?? ' ')
   const runs = new RegExp(EDGE_RUN.source, 'g')
+  let edges = 0
   for (let match = runs.exec(outside); match !== null; match = runs.exec(outside)) {
-    const arrow = match[0]
+    const found = match[0]
     const start = match.index
-    let end = start + arrow.length
-    let last = arrow
-    const startMarker = !arrow.startsWith('<') && marker(start - 1) && !wordChar(start - 2)
-    if (startMarker) return { text, ids, unsupported: text.slice(start - 1, end + 1).trim() }
-    if (!arrow.endsWith('>') && marker(end)) return { text, ids, unsupported: text.slice(start, end + 1) }
-    if (TEXT_EDGE_OPEN.has(arrow) && space(end)) {
-      const rest = TEXT_EDGE_REST.exec(outside.slice(end))
-      if (rest === null) return { text, ids, unsupported: arrow }
+    let end = start + found.length
+    let last = found
+    const fail = (from: number, to: number) => ({ text, ids, edges, problem: arrow(text.slice(from, to).trim()) })
+    if (!found.startsWith('<') && marker(start - 1) && space(start - 2)) return fail(start - 1, end + 1)
+    if (!found.endsWith('>') && marker(end)) return fail(start, end + 1)
+    if (TEXT_EDGE_OPEN.has(found) && space(end)) {
+      const label = outside.slice(end).search(/\S/)
+      TEXT_EDGE_CLOSE.lastIndex = end + label + 1
+      const close = label === -1 ? null : TEXT_EDGE_CLOSE.exec(outside)
+      if (close === null) return fail(start, end)
+      last = close[1]!
+      const closeStart = close.index + 1
       blank(start, end)
-      const close = end + rest[0].length - rest[2]!.length
-      last = rest[2]!
-      end = close + last.length
-      blank(close, end)
+      end = closeStart + last.length
+      blank(closeStart, end)
       runs.lastIndex = end
-    } else if (FLOWCHART_EDGES.has(arrow)) {
+    } else if (FLOWCHART_EDGES.has(found)) {
       blank(start, end)
     } else {
-      return { text, ids, unsupported: arrow }
+      return fail(start, end)
     }
-    if (!last.endsWith('>') && marker(end)) return { text, ids, unsupported: text.slice(start, end + 1) }
+    if (!last.endsWith('>') && marker(end)) return fail(start, end + 1)
+    edges++
   }
-  return { text: shown, ids }
+  return { text: shown, ids, edges }
 }

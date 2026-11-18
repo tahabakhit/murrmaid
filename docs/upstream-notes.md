@@ -70,6 +70,13 @@ Each is a candidate upstream issue. None has been filed yet.
     drawn under a border).
 20. Flowchart labels are sometimes one column off centre (`│  Done │`).
 
+## More parsing
+
+21. Flowchart statements separated by `;` on one line: only the first is
+    read (`A --> B; B --> A` draws one edge).
+22. `A:::name-->B` reads `name--` as the style name and drops the edge.
+23. Class relation multiplicities (`"1" o-- "0..*"`) are not drawn.
+
 ## How murrmaid copes
 
 | Problem | murrmaid |
@@ -84,3 +91,5 @@ Each is a candidate upstream issue. None has been filed yet.
 | 6 | falls back (direction outside a subgraph) |
 | 18 | falls back on wide, zero-width, control or non-BMP characters |
 | 19, 20 | drawn as is |
+| 21, 22 | falls back when the renderer's parse has fewer edges than the source has arrows |
+| 23 | falls back on multiplicities |

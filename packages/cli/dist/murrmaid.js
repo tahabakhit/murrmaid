@@ -3408,14 +3408,14 @@ function parseSequenceDiagram(lines) {
     );
     if (msgMatch) {
       const from = msgMatch[1];
-      const arrow = msgMatch[2];
+      const arrow2 = msgMatch[2];
       const activationMark = msgMatch[3];
       const to = msgMatch[4];
       const label = normalizeBrTags(msgMatch[5].trim());
       ensureActor(diagram, actorIds, from);
       ensureActor(diagram, actorIds, to);
-      const lineStyle = arrow.startsWith("--") ? "dashed" : "solid";
-      const arrowHead = arrow.includes(">>") || arrow.includes("x") ? "filled" : "open";
+      const lineStyle = arrow2.startsWith("--") ? "dashed" : "solid";
+      const arrowHead = arrow2.includes(">>") || arrow2.includes("x") ? "filled" : "open";
       const msg = {
         from,
         to,
@@ -3433,14 +3433,14 @@ function parseSequenceDiagram(lines) {
     );
     if (simpleMsgMatch) {
       const from = simpleMsgMatch[1];
-      const arrow = simpleMsgMatch[2];
+      const arrow2 = simpleMsgMatch[2];
       const activationMark = simpleMsgMatch[3];
       const to = simpleMsgMatch[4];
       const label = normalizeBrTags(simpleMsgMatch[5].trim());
       ensureActor(diagram, actorIds, from);
       ensureActor(diagram, actorIds, to);
-      const lineStyle = arrow.startsWith("--") ? "dashed" : "solid";
-      const arrowHead = arrow.includes(">>") || arrow.includes("x") ? "filled" : "open";
+      const lineStyle = arrow2.startsWith("--") ? "dashed" : "solid";
+      const arrowHead = arrow2.includes(">>") || arrow2.includes("x") ? "filled" : "open";
       const msg = { from, to, label, lineStyle, arrowHead };
       if (activationMark === "+") msg.activate = true;
       if (activationMark === "-") msg.deactivate = true;
@@ -3939,18 +3939,18 @@ function parseRelationship(line) {
   const from = match[1];
   const rawFromCardinality = match[2];
   const fromCardinality = rawFromCardinality ? normalizeBrTags(rawFromCardinality) : void 0;
-  const arrow = match[3].trim();
+  const arrow2 = match[3].trim();
   const rawToCardinality = match[4];
   const toCardinality = rawToCardinality ? normalizeBrTags(rawToCardinality) : void 0;
   const to = match[5];
   const rawLabel = match[6]?.trim();
   const label = rawLabel ? normalizeBrTags(rawLabel) : void 0;
-  const parsed = parseArrow(arrow);
+  const parsed = parseArrow(arrow2);
   if (!parsed) return null;
   return { from, to, type: parsed.type, markerAt: parsed.markerAt, label, fromCardinality, toCardinality };
 }
-function parseArrow(arrow) {
-  const a = arrow.trim();
+function parseArrow(arrow2) {
+  const a = arrow2.trim();
   switch (a) {
     case "<|--":
       return { type: "inheritance", markerAt: "from" };
@@ -5568,8 +5568,8 @@ function renderMermaidASCII(text, options = {}) {
 
 // packages/core/src/layout.ts
 var MAX_GRAPH_NODES = 24;
-function layoutProblem(source) {
-  const graph = parseMermaid(source);
+var parseGraph = (source) => parseMermaid(source);
+function layoutProblem(graph) {
   if (graph.nodes.size > MAX_GRAPH_NODES) return `more than ${MAX_GRAPH_NODES} nodes`;
   if (graph.direction === "LR" || graph.direction === "RL") return void 0;
   const firstRow = firstRowCandidates(graph);
@@ -5670,7 +5670,7 @@ var STYLE_SHORTHAND = /:::[\p{L}\p{N}_]+(?:-[\p{L}\p{N}_]+)*/gu;
 var EDGE_RUN = /<?[-=.~]{2,}>?/g;
 var FLOWCHART_EDGES = /* @__PURE__ */ new Set(["-->", "--->", "<-->", "<--->", "---", "-.->", "<-.->", "-.-", "==>", "<==>", "==="]);
 var TEXT_EDGE_OPEN = /* @__PURE__ */ new Set(["--", "-.", "==", "<--", "<-.", "<=="]);
-var TEXT_EDGE_REST = /^\s+(.+?)\s+(-->|---|\.->|-\.-|==>|===)/;
+var TEXT_EDGE_CLOSE = /\s(-->|---|\.->|-\.-|==>|===)/g;
 var SEQUENCE_MESSAGE = /^(\S+?)\s*(--?>?>|--?[)x]|--?>>|--?>)\s*([+-]?)(\S+?)\s*:\s*(.+)$/;
 var CLASS_RELATION = /^(\S+?)\s+(?:"([^"]*?)"\s+)?(<\|--|<\|\.\.|\*--|o--|-->|--\*|--o|--\|>|\.\.>|\.\.\|>|<--|<\.\.)\s+(?:"([^"]*?)"\s+)?(\S+?)(?:\s*:\s*(.+))?$/;
 var ER_RELATION = /^(\S+)\s+([|o}{]+)(--|\.\.)([|o}{]+)\s+(\S+)\s*:\s*(.+)$/;
@@ -5697,13 +5697,24 @@ function drawDiagram(source, options = {}) {
   const text = [type === "flowchart" ? flowchartHeader(header) : header, ...body].join("\n");
   if (body.some((line) => NOT_ONE_COLUMN.test(line))) return fail("wide, zero-width or control characters");
   if (type === "flowchart" && topLevelDirection(body)) return fail("direction outside a subgraph");
-  const content = contentLines(type, body).map((line) => readLine(type, line));
-  const unsupported = content.find((line) => line.unsupported !== void 0)?.unsupported;
-  if (unsupported !== void 0) return fail(`unsupported arrow "${unsupported}"`);
+  let block = false;
+  const content = contentLines(type, body).map((line) => {
+    const read = readLine(type, line, block);
+    if (line.endsWith("{")) block = true;
+    else if (line === "}") block = false;
+    return read;
+  });
+  const problem = content.find((line) => line.problem !== void 0)?.problem;
+  if (problem !== void 0) return fail(problem);
   let drawing;
   try {
-    const problem = type === "flowchart" || type === "state" ? layoutProblem(text) : void 0;
-    if (problem !== void 0) return fail(`layout would not finish: ${problem}`);
+    if (type === "flowchart" || type === "state") {
+      const graph = parseGraph(text);
+      const arrows = content.reduce((sum, line) => sum + line.edges, 0);
+      if (graph.edges.length < arrows) return fail(`drawing leaves out ${arrows - graph.edges.length} of ${arrows} edges`);
+      const layout = layoutProblem(graph);
+      if (layout !== void 0) return fail(`layout would not finish: ${layout}`);
+    }
     drawing = renderMermaidASCII(text, { useAscii: options.ascii === true, colorMode: options.color ? "ansi16" : "none" });
   } catch (error) {
     return fail(`parse error: ${error instanceof Error ? error.message : String(error)}`);
@@ -5724,14 +5735,19 @@ function flowchartHeader(header) {
 function stateStyles(line) {
   const style = new RegExp("^" + STYLE_SHORTHAND.source, "u");
   let shown = "";
-  let from = 0;
-  for (; ; ) {
-    const colon = line.indexOf(":", from);
-    const match = colon === -1 ? null : style.exec(line.slice(colon));
-    if (match === null) return shown + line.slice(from);
-    shown += line.slice(from, colon);
-    from = colon + match[0].length;
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') quoted = !quoted;
+    if (char === ":" && !quoted) {
+      const match = style.exec(line.slice(i));
+      if (match === null) return shown + line.slice(i);
+      i += match[0].length - 1;
+      continue;
+    }
+    shown += char;
   }
+  return shown;
 }
 function topLevelDirection(body) {
   let depth = 0;
@@ -5753,6 +5769,7 @@ function tidy(drawing) {
 function contentLines(type, lines) {
   return lines.map((line) => line.trim()).filter((line) => !STYLE_LINE.test(line)).filter((line) => !(type === "xychart" && XY_DATA_LINE.test(line))).filter((line) => !((type === "flowchart" || type === "state") && CLASS_LINE.test(line)));
 }
+var arrow = (text) => `unsupported arrow "${text}"`;
 function missingWords(type, lines, drawing) {
   const keywords = new Set(KEYWORDS[type]);
   const shown = new Set(drawing.match(WORD) ?? []);
@@ -5766,39 +5783,43 @@ function missingWords(type, lines, drawing) {
   }
   return [...missing];
 }
-function readLine(type, line) {
+function readLine(type, line, inBlock) {
   const text = line.replace(LINE_BREAK, " ");
+  const head = text.split(":")[0];
+  const plain = { text, ids: [], edges: 0 };
   switch (type) {
     case "flowchart":
-      return flowchartLine(text.replace(STYLE_SHORTHAND, " "));
+      return flowchartLine(text);
     case "sequence": {
       const message = SEQUENCE_MESSAGE.exec(text);
-      if (message === null) return { text, ids: aliasIds(type, text) };
-      const [, from, arrow, , to, label] = message;
-      if (arrow.includes("x") || from.endsWith("<") || to.startsWith(">")) return { text, ids: [], unsupported: `${from}${arrow}${to}` };
-      return { text: `${from} ${to}: ${label}`, ids: [] };
+      if (message === null) return { ...plain, ids: aliasIds(type, text) };
+      const [, from, operator, , to, label] = message;
+      if (operator.includes("x") || from.endsWith("<") || to.startsWith(">")) return { ...plain, problem: arrow(`${from}${operator}${to}`) };
+      return { ...plain, text: `${from} ${to}: ${label}` };
     }
     case "class": {
-      if (!RELATION_LINE.test(text.split(":")[0])) return { text, ids: [] };
+      if (inBlock || !RELATION_LINE.test(head)) return plain;
       const relation = CLASS_RELATION.exec(text);
-      if (relation === null) return { text, ids: [], unsupported: text.split(":")[0].trim() };
-      const [, from, fromCount = "", , toCount = "", to, label = ""] = relation;
-      return { text: [from, fromCount, toCount, to, label].join(" "), ids: [] };
+      if (relation === null) return { ...plain, problem: arrow(head.trim()) };
+      const [, from, fromCount, , toCount, to, label = ""] = relation;
+      if (fromCount !== void 0 || toCount !== void 0) return { ...plain, problem: "multiplicities are not drawn" };
+      return { ...plain, text: [from, to, label].join(" ") };
     }
     case "er": {
-      if (!RELATION_LINE.test(text.split(":")[0])) return { text, ids: [] };
+      if (inBlock || !RELATION_LINE.test(head)) return plain;
       const relation = ER_RELATION.exec(text);
       if (relation === null || !ER_ENDS.has(sorted(relation[2])) || !ER_ENDS.has(sorted(relation[4]))) {
-        return { text, ids: [], unsupported: text.split(":")[0].trim() };
+        return { ...plain, problem: arrow(head.trim()) };
       }
-      return { text: [relation[1], relation[5], relation[6]].join(" "), ids: [] };
+      return { ...plain, text: [relation[1], relation[5], relation[6]].join(" ") };
     }
     case "state": {
       const described = /^([\p{L}\p{N}_]+)\s*:/u.exec(text);
-      return { text, ids: [...aliasIds(type, text), ...described ? [described[1]] : []] };
+      const edges = head.includes("-->") ? 1 : 0;
+      return { ...plain, edges, ids: [...aliasIds(type, text), ...described ? [described[1]] : []] };
     }
     default:
-      return { text, ids: [] };
+      return plain;
   }
 }
 var sorted = (chars) => [...chars].sort().join("");
@@ -5839,36 +5860,42 @@ function flowchartLine(line) {
   let shown = text;
   const blank = (start, end) => {
     shown = shown.slice(0, start) + " ".repeat(end - start) + shown.slice(end);
+    outside = outside.slice(0, start) + " ".repeat(end - start) + outside.slice(end);
   };
+  for (const match of outside.matchAll(STYLE_SHORTHAND)) blank(match.index, match.index + match[0].length);
+  if (/^subgraph(\s|$)/.test(text)) return { text: shown, ids, edges: 0 };
   const marker = (i) => /[ox]/.test(outside[i] ?? "");
-  const wordChar = (i) => /[\p{L}\p{N}_]/u.test(outside[i] ?? " ");
   const space = (i) => /\s/.test(outside[i] ?? " ");
   const runs = new RegExp(EDGE_RUN.source, "g");
+  let edges = 0;
   for (let match = runs.exec(outside); match !== null; match = runs.exec(outside)) {
-    const arrow = match[0];
+    const found = match[0];
     const start = match.index;
-    let end = start + arrow.length;
-    let last = arrow;
-    const startMarker = !arrow.startsWith("<") && marker(start - 1) && !wordChar(start - 2);
-    if (startMarker) return { text, ids, unsupported: text.slice(start - 1, end + 1).trim() };
-    if (!arrow.endsWith(">") && marker(end)) return { text, ids, unsupported: text.slice(start, end + 1) };
-    if (TEXT_EDGE_OPEN.has(arrow) && space(end)) {
-      const rest = TEXT_EDGE_REST.exec(outside.slice(end));
-      if (rest === null) return { text, ids, unsupported: arrow };
+    let end = start + found.length;
+    let last = found;
+    const fail = (from, to) => ({ text, ids, edges, problem: arrow(text.slice(from, to).trim()) });
+    if (!found.startsWith("<") && marker(start - 1) && space(start - 2)) return fail(start - 1, end + 1);
+    if (!found.endsWith(">") && marker(end)) return fail(start, end + 1);
+    if (TEXT_EDGE_OPEN.has(found) && space(end)) {
+      const label = outside.slice(end).search(/\S/);
+      TEXT_EDGE_CLOSE.lastIndex = end + label + 1;
+      const close = label === -1 ? null : TEXT_EDGE_CLOSE.exec(outside);
+      if (close === null) return fail(start, end);
+      last = close[1];
+      const closeStart = close.index + 1;
       blank(start, end);
-      const close = end + rest[0].length - rest[2].length;
-      last = rest[2];
-      end = close + last.length;
-      blank(close, end);
+      end = closeStart + last.length;
+      blank(closeStart, end);
       runs.lastIndex = end;
-    } else if (FLOWCHART_EDGES.has(arrow)) {
+    } else if (FLOWCHART_EDGES.has(found)) {
       blank(start, end);
     } else {
-      return { text, ids, unsupported: arrow };
+      return fail(start, end);
     }
-    if (!last.endsWith(">") && marker(end)) return { text, ids, unsupported: text.slice(start, end + 1) };
+    if (!last.endsWith(">") && marker(end)) return fail(start, end + 1);
+    edges++;
   }
-  return { text: shown, ids };
+  return { text: shown, ids, edges };
 }
 
 // packages/core/src/fences.ts

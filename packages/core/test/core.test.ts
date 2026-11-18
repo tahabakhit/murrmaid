@@ -53,6 +53,10 @@ describe('mermaid syntax the renderer draws, though not word for word', () => {
     'a fork in a same-direction subgraph': 'flowchart TD\n  subgraph S [Group]\n    direction TD\n    A[a] --> B[b]\n    B --> C[c]\n    B --> D[d]\n  end',
     'a generic sequence actor': 'sequenceDiagram\n  List<T>->>Cache: lookup',
     'a class label with ..': 'classDiagram\n  A --> B : from .. to',
+    'a subgraph title with ..': 'flowchart TD\n  subgraph Versions 1..4\n    A[A much wider first step] --> B[y]\n  end',
+    'a hyphenated id before a thick arrow': 'flowchart LR\n  service-x ==> B',
+    'a range in a class member': 'classDiagram\n  class Item {\n    +String[1..3] items\n  }',
+    'a quoted state name with :::': 'stateDiagram-v2\n  state "Cache:::v2" as C\n  [*] --> C',
     'every edge it draws': 'flowchart LR\n  A --> B --- C -.-> D -.- E ==> F === G\n  H <--> I <-.-> J <==> K ---> L <---> M\n  N -- one --> O -. two .-> P == three ==> Q',
   }
   for (const [name, source] of Object.entries(cases)) {
@@ -81,7 +85,7 @@ describe('fallback leaves the block exactly as it was', () => {
 
   test('malformed diagrams', () => {
     assert.match(unchanged('graph TD\n  A[unclosed --> B'), /leaves out "unclosed"/)
-    assert.match(unchanged('graph LR\n  A-->B'), /leaves out "B"/)
+    assert.match(unchanged('graph LR\n  A-->B'), /leaves out/)
     assert.match(unchanged('sequenceDiagram\n  Alice-x>>\n  ???'), /nothing drawn|leaves out/)
     assert.match(unchanged('flowchart LR\n  A --> B\n  subgraph X\n  C'), /leaves out "X"/)
     assert.match(unchanged('not mermaid at all'), /unsupported/)
@@ -120,6 +124,19 @@ describe('fallback leaves the block exactly as it was', () => {
     assert.match(unchanged('classDiagram\n  Car o-- Wheel\n  Wheel -- Road'), /unsupported arrow "Wheel -- Road"/)
   })
 
+  test('edges the renderer would drop', () => {
+    assert.match(unchanged('graph LR;\n  A[One] --> B[Two]; B --> A;'), /leaves out 1 of 2 edges/)
+    assert.match(unchanged('flowchart LR\n  A[First]:::hot-->B[Second]\n  B[Second]'), /leaves out 1 of 1 edges/)
+    assert.match(unchanged('classDiagram\n  Order "1" o-- "0..*" LineItem : contains'), /multiplicities/)
+    assert.match(unchanged('flowchart LR\n  A[first] --> B\n  A["first:::second"] --> C'), /leaves out "second"/)
+  })
+
+  test('an unclosed text edge is refused quickly', () => {
+    const started = performance.now()
+    assert.match(unchanged('flowchart LR\n  A -- "' + ' '.repeat(15000) + '"x B'), /unsupported arrow|too large/)
+    assert.ok(performance.now() - started < 500)
+  })
+
   test('a state transition with :::style keeps its exit, and labels keep theirs', () => {
     for (const source of ['stateDiagram-v2\n  [*] --> Idle\n  Idle:::active --> [*]', 'stateDiagram-v2\n  [*] --> Idle\n  Idle:::active-->[*]']) {
       const result = drawDiagram(source)
@@ -128,6 +145,8 @@ describe('fallback leaves the block exactly as it was', () => {
     }
     const labelled = drawDiagram('stateDiagram-v2\n  Idle --> Run: stats:::check')
     assert.ok(labelled.ok && labelled.drawing.includes('stats:::check'))
+    const quoted = drawDiagram('stateDiagram-v2\n  state "Cache:::v2" as C\n  [*] --> C')
+    assert.ok(quoted.ok && quoted.drawing.includes('Cache:::v2'))
   })
 
   // Each of these takes beautiful-mermaid about 25 seconds to give up on.

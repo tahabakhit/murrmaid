@@ -166,7 +166,10 @@ byte. A diagram stays as source when:
   (keywords, styling lines and ids that carry their own labels excepted)
   against the drawing;
 - it uses an arrow beautiful-mermaid drops or draws as a plain one, such as
-  flowchart `--o`, `--x` and `~~~`, sequence `-x`, or ER `}o`;
+  flowchart `--o`, `--x` and `~~~`, sequence `-x`, or ER `}o`, or class
+  multiplicities, which it doesn't draw;
+- the renderer's parse of a flowchart or state diagram has fewer edges than
+  the source has arrows;
 - it has front matter (`---`), which would carry a title;
 - it contains wide or zero-width characters (CJK, emoji, combining marks,
   anything beyond U+FFFF) or control characters such as tabs, which the
